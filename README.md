@@ -150,7 +150,8 @@ Not yet verified: the OTA update flow, the 4.3" variant, SD pins on other board 
 
 MIT, see `LICENSE`, with these exceptions:
 
-* `main/sunton_esp32_8048s050c.c` and `.h` (board support: panel, touch, LVGL port) are based on code by Sven Fabricius
-  (see the file headers) and are not covered by this license.
+* `main/sunton_esp32_8048s050c.c` and `.h` (board support: panel, touch, LVGL port) are based on
+  [mr-sven/esp32-8048S050C](https://github.com/mr-sven/esp32-8048S050C) by Sven Fabricius (see the file headers) and are not
+  covered by this license. That repository has no license file at the moment; if you know its terms, please open an issue.
 * `main/web/lame.min.js` is lamejs, LGPL-3.0.
 * Dependencies (ESP-IDF, LVGL, esp_lcd_touch_gt911, libhelix MP3) are downloaded by the build and keep their own licenses.
