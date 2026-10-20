@@ -1,0 +1,72 @@
+# This file was generated using idf.py save-defconfig. It can be edited manually.
+# Espressif IoT Development Framework (ESP-IDF) 5.2.0 Project Minimal Configuration
+#
+CONFIG_IDF_TARGET="esp32s3"
+CONFIG_ESPTOOLPY_FLASHSIZE_16MB=y
+CONFIG_ESPTOOLPY_FLASHMODE_QIO=y
+CONFIG_PARTITION_TABLE_CUSTOM=y
+CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions.csv"
+CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ_240=y
+CONFIG_FREERTOS_HZ=1000
+
+CONFIG_LV_CONF_SKIP=y
+CONFIG_LV_MEM_SIZE_KILOBYTES=128
+CONFIG_LV_DEF_REFR_PERIOD=15
+CONFIG_LV_FONT_MONTSERRAT_20=y
+CONFIG_LV_FONT_MONTSERRAT_28=y
+CONFIG_LV_FONT_MONTSERRAT_36=y
+CONFIG_LV_USE_CLIB_MALLOC=y
+CONFIG_LV_USE_FS_STDIO=y
+CONFIG_LV_FS_STDIO_LETTER=83
+CONFIG_LV_FS_STDIO_PATH=""
+CONFIG_LV_USE_TJPGD=y
+CONFIG_LV_CACHE_DEF_SIZE=4194304
+CONFIG_LV_IMAGE_HEADER_CACHE_DEF_CNT=128
+
+CONFIG_LV_OS_FREERTOS=y
+
+CONFIG_SPIRAM=y
+CONFIG_SPIRAM_MODE_OCT=y
+CONFIG_SPIRAM_SPEED_80M=y
+
+# Enabling the following configurations can help increase the PCLK frequency in the case when
+# the Frame Buffer is allocated from the PSRAM and fetched by EDMA
+CONFIG_SPIRAM_XIP_FROM_PSRAM=y
+
+# SD card: long file names (UTF-8 API, latin-1 codepage for short names)
+CONFIG_FATFS_LFN_HEAP=y
+CONFIG_FATFS_MAX_LFN=255
+CONFIG_FATFS_API_ENCODING_UTF_8=y
+CONFIG_FATFS_CODEPAGE_850=y
+
+# LVGL: QR code for the WiFi credentials
+CONFIG_LV_USE_QRCODE=y
+
+# HTTP server: album/file names travel in the query string
+CONFIG_HTTPD_MAX_URI_LEN=1024
+CONFIG_HTTPD_MAX_REQ_HDR_LEN=1024
+
+# RGB panel: resync the framebuffer DMA every vblank so a bandwidth glitch (WiFi) can never leave a permanent sideways shift
+CONFIG_LCD_RGB_RESTART_IN_VSYNC=y
+CONFIG_ESP_MAIN_TASK_STACK_SIZE=16384
+# bigger instruction cache: less code refilling from PSRAM (code runs from PSRAM)
+CONFIG_ESP32S3_INSTRUCTION_CACHE_32KB=y
+
+# Speed: build with -O2 instead of the debug level (LVGL drawing, JPEG and MP3 decoding)
+CONFIG_COMPILER_OPTIMIZATION_PERF=y
+CONFIG_COMPILER_OPTIMIZATION_ASSERTIONS_SILENT=y
+
+# RGB panel with bounce buffer: the panel DMA reads small internal-RAM buffers that an ISR refills from the PSRAM
+# framebuffer (removes the sideways picture shifts caused by PSRAM contention)
+CONFIG_SUNTON_ESP32_USE_BOUNCE_BUFFER=y
+# the refill ISR and its callback must live in internal RAM
+CONFIG_LCD_RGB_ISR_IRAM_SAFE=y
+CONFIG_ESP32S3_DATA_CACHE_LINE_64B=y
+
+# WiFi / upload speed: the bounce-buffer refill ISR keeps core 0 busy, so WiFi, TCP/IP and the HTTP server run on core 1
+# (idle in upload mode: the player is stopped). Bigger TCP windows for faster uploads.
+CONFIG_ESP_WIFI_TASK_PINNED_TO_CORE_1=y
+CONFIG_LWIP_TCPIP_TASK_AFFINITY_CPU1=y
+CONFIG_LWIP_TCP_SND_BUF_DEFAULT=16384
+CONFIG_LWIP_TCP_WND_DEFAULT=16384
+CONFIG_LWIP_TCP_RECVMBOX_SIZE=16

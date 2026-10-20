@@ -1,0 +1,9 @@
+build/
+managed_components/
+sdkconfig
+sdkconfig.old
+build_variant_*/
+release/
+build_stamp.txt
+.vscode/
+__pycache__/

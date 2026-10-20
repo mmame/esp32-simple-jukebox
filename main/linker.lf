@@ -1,0 +1,7 @@
+# The MP3 decoder (about 34 KB of code and tables) runs continuously on core 1. Executed from PSRAM it keeps refilling the
+# shared caches and competes with the panel DMA for PSRAM bandwidth, which shows up as brief sideways shifts of the picture
+# while playing. Keeping it in internal RAM takes that traffic away.
+[mapping:helix_internal]
+archive: libchmorgan__esp-libhelix-mp3.a
+entries:
+    * (noflash)

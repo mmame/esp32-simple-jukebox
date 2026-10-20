@@ -1,0 +1,404 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Music Player</title>
+<style>
+  :root { --bg:#f4f5f7; --card:#fff; --ink:#1b1f27; --mute:#667085; --line:#e1e4ea; --accent:#2563eb; --ok:#16a34a; --bad:#dc2626; }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg:#14181f; --card:#1f2530; --ink:#eef1f6; --mute:#9aa4b5; --line:#323a48; --accent:#60a5fa; }
+  }
+  * { box-sizing:border-box; }
+  body { margin:0; background:var(--bg); color:var(--ink); font:16px/1.4 system-ui,-apple-system,Segoe UI,sans-serif; }
+  main { max-width:760px; margin:0 auto; padding:16px; }
+  h1 { font-size:22px; margin:0; }
+  h2 { font-size:17px; margin:0 0 12px; }
+  section { background:var(--card); border:1px solid var(--line); border-radius:12px; padding:16px; margin-top:16px; }
+  header { display:flex; align-items:center; justify-content:space-between; gap:12px; }
+  button, .btn { font:inherit; padding:10px 16px; border-radius:8px; border:1px solid var(--line); background:var(--card); color:var(--ink); cursor:pointer; }
+  button.primary { background:var(--accent); border-color:var(--accent); color:#fff; font-weight:600; }
+  button.danger { color:var(--bad); }
+  button:disabled { opacity:.5; cursor:default; }
+  input[type=text] { font:inherit; width:100%; padding:10px; border-radius:8px; border:1px solid var(--line); background:var(--bg); color:var(--ink); }
+  label { display:block; font-weight:600; margin:14px 0 6px; }
+  .hint { color:var(--mute); font-size:14px; }
+  .bar { height:8px; border-radius:4px; background:var(--line); overflow:hidden; margin-top:6px; }
+  .bar > i { display:block; height:100%; width:0; background:var(--accent); transition:width .15s; }
+  .album { display:flex; gap:12px; padding:10px 0; border-top:1px solid var(--line); }
+  .album:first-child { border-top:0; }
+  .album img, .album .ph { width:72px; height:72px; border-radius:8px; object-fit:cover; flex:none; background:var(--line); }
+  .album .ph { display:flex; align-items:center; justify-content:center; color:var(--mute); font-size:28px; }
+  .album .grow { flex:1; min-width:0; }
+  .album b { overflow-wrap:anywhere; }
+  .tracks { margin:6px 0 0; padding:0; list-style:none; font-size:14px; color:var(--mute); }
+  .tracks li { display:flex; justify-content:space-between; gap:8px; padding:3px 0; }
+  .tracks li span { overflow-wrap:anywhere; }
+  .x { border:0; background:none; color:var(--bad); padding:0 6px; cursor:pointer; }
+  .pending { margin:8px 0 0; padding:0; list-style:none; }
+  .pending li { display:flex; align-items:center; gap:6px; padding:6px 0; border-top:1px solid var(--line); }
+  .pending li span { flex:1; overflow-wrap:anywhere; }
+  .pending button { padding:2px 10px; }
+  #cover-prev { width:120px; height:120px; border-radius:8px; background:var(--line); display:block; margin-top:8px; }
+  #status { margin-top:12px; min-height:1.4em; }
+  #status.err { color:var(--bad); }
+  #status.ok { color:var(--ok); }
+</style>
+</head>
+<body>
+<main>
+  <header>
+    <h1>Music Player</h1>
+    <button id="done" class="primary">Done</button>
+  </header>
+
+  <section>
+    <h2>Music on the SD card</h2>
+    <div id="space" class="hint"></div>
+    <div class="bar"><i id="space-bar"></i></div>
+    <div id="albums" style="margin-top:8px"></div>
+  </section>
+
+  <section>
+    <h2>Add music</h2>
+    <label for="album">Album name</label>
+    <input id="album" type="text" list="album-list" maxlength="60" placeholder="e.g. Beatles - Abbey Road" autocomplete="off">
+    <datalist id="album-list"></datalist>
+    <div class="hint">Shown under the cover on the player. Use an existing name to add tracks to that album.</div>
+
+    <label for="cover">Cover picture (optional)</label>
+    <input id="cover" type="file" accept="image/*">
+    <canvas id="cover-prev" width="120" height="120"></canvas>
+    <div class="hint">Any picture. It is cropped to a square and shrunk automatically.</div>
+
+    <label for="tracks">Songs</label>
+    <input id="tracks" type="file" accept="audio/*,.mp3,.m4a,.flac,.wav,.ogg,.aac" multiple>
+    <ul id="pending" class="pending"></ul>
+    <div class="hint">MP3 files are sent as they are. Other formats (FLAC, WAV, M4A, ...) are converted to MP3 here in the browser; this takes a while for long songs.</div>
+
+    <p><button id="upload" class="primary">Upload</button></p>
+    <div class="bar"><i id="progress"></i></div>
+    <div id="status"></div>
+  </section>
+
+  <section>
+    <h2>Firmware update</h2>
+    <div class="hint" id="version"></div>
+    <p><input id="fw" type="file" accept=".bin"></p>
+    <button id="fw-go">Install update</button>
+    <div class="hint">Use the file ending in <code>-ota.bin</code>. The player restarts afterwards.</div>
+    <div class="bar"><i id="fw-progress"></i></div>
+    <div id="fw-status" class="hint"></div>
+  </section>
+</main>
+
+<script>
+"use strict";
+const $ = id => document.getElementById(id);
+const COVER_PX = 360;
+let library = { albums: [] };
+let pending = [];           // File objects, in play order
+let busy = false;
+
+function el(tag, props, ...kids) {
+  const e = Object.assign(document.createElement(tag), props || {});
+  for (const k of kids) e.append(k);
+  return e;
+}
+const fmtMB = b => (b / 1048576).toFixed(b < 10485760 ? 1 : 0) + " MB";
+const pad = (n, w) => String(n).padStart(w, "0");
+const q = s => encodeURIComponent(s);
+
+function setStatus(msg, cls) { const s = $("status"); s.textContent = msg; s.className = cls || ""; }
+function setProgress(f) { $("progress").style.width = Math.round(Math.max(0, Math.min(1, f)) * 100) + "%"; }
+
+function xhr(method, url, body, onprog) {
+  return new Promise((resolve, reject) => {
+    const x = new XMLHttpRequest();
+    x.open(method, url);
+    if (onprog) x.upload.onprogress = e => e.lengthComputable && onprog(e.loaded / e.total);
+    x.onload = () => x.status < 300 ? resolve(x.responseText) : reject(new Error(x.responseText || "HTTP " + x.status));
+    x.onerror = () => reject(new Error("connection to the player lost"));
+    x.send(body);
+  });
+}
+
+/* ---------- library list ---------- */
+
+async function refresh() {
+  const r = await fetch("/api/albums");
+  library = await r.json();
+  library.albums.sort((a, b) => a.name.localeCompare(b.name));
+
+  const used = library.total - library.free;
+  $("space").textContent = library.total ? `${fmtMB(used)} used of ${fmtMB(library.total)}, ${fmtMB(library.free)} free` : "";
+  $("space-bar").style.width = library.total ? (100 * used / library.total) + "%" : "0";
+  $("version").textContent = "Firmware build " + library.version;
+
+  const list = $("albums");
+  list.replaceChildren();
+  if (!library.albums.length) list.append(el("p", { className: "hint", textContent: "No music yet." }));
+  const dl = $("album-list");
+  dl.replaceChildren();
+  for (const a of library.albums) {
+    dl.append(el("option", { value: a.name }));
+    const thumb = a.cover ? el("img", { src: "/api/cover?album=" + q(a.name) + "&v=" + Date.now(), alt: "" })
+                          : el("div", { className: "ph", textContent: "♪" });
+    const tracks = el("ul", { className: "tracks" });
+    a.tracks.sort((x, y) => x.name.localeCompare(y.name));
+    for (const t of a.tracks) {
+      const del = el("button", { className: "x", title: "Delete song", textContent: "✕" });
+      del.onclick = () => removeTrack(a.name, t.name);
+      tracks.append(el("li", {}, el("span", { textContent: t.name.replace(/\.mp3$/i, "") + " (" + fmtMB(t.size) + ")" }), del));
+    }
+    const delAlbum = el("button", { className: "danger", textContent: "Delete album" });
+    delAlbum.onclick = () => removeAlbum(a.name);
+    const rename = el("button", { textContent: "Rename" });
+    rename.onclick = () => renameAlbum(a.name);
+    const coverIn = el("input", { type: "file", accept: "image/*", style: "display:none" });
+    coverIn.onchange = () => changeCover(a.name, coverIn.files[0]);
+    const cover = el("button", { textContent: "Change cover" });
+    cover.onclick = () => coverIn.click();
+    const addSongs = el("button", { textContent: "Add songs" });
+    addSongs.onclick = () => {
+      $("album").value = a.name;
+      $("upload").scrollIntoView({ behavior: "smooth", block: "center" });
+      $("status").className = "";
+      $("status").textContent = `Adding songs to "${a.name}": choose the songs, then press Upload.`;
+      $("tracks").click();    /* opens the file picker right away */
+    };
+    list.append(el("div", { className: "album" }, thumb,
+      el("div", { className: "grow" },
+        el("b", { textContent: a.name }),
+        el("div", { className: "hint", textContent: a.tracks.length + " songs" }),
+        el("details", {}, el("summary", { className: "hint", textContent: "Show songs" }), tracks),
+        el("div", { style: "margin-top:6px;display:flex;gap:8px;flex-wrap:wrap" }, rename, cover, addSongs, delAlbum, coverIn))));
+  }
+}
+
+async function removeTrack(album, file) {
+  if (!confirm("Delete this song?\n" + file)) return;
+  try { await xhr("DELETE", `/api/file?album=${q(album)}&file=${q(file)}`); } catch (e) { alert(e.message); }
+  refresh();
+}
+async function removeAlbum(album) {
+  if (!confirm("Delete the whole album and all its songs?\n" + album)) return;
+  try { await xhr("DELETE", "/api/album?album=" + q(album)); } catch (e) { alert(e.message); }
+  refresh();
+}
+
+async function renameAlbum(album) {
+  const to = cleanName(prompt("New album name:", album) || "", 60);
+  if (!to || to === album) return;
+  try { await xhr("POST", `/api/rename?album=${q(album)}&to=${q(to)}`); } catch (e) { alert(e.message); }
+  refresh();
+}
+async function changeCover(album, file) {
+  if (!file) return;   // the album name is already known, nothing to type
+  try { await xhr("PUT", `/api/file?album=${q(album)}&file=cover.jpg`, await coverBlob(file)); } catch (e) { alert(e.message); }
+  refresh();
+}
+
+/* ---------- pending songs ---------- */
+
+function renderPending() {
+  const ul = $("pending");
+  ul.replaceChildren();
+  pending.forEach((f, i) => {
+    const up = el("button", { textContent: "▲", disabled: i === 0 });
+    const down = el("button", { textContent: "▼", disabled: i === pending.length - 1 });
+    const rm = el("button", { className: "x", textContent: "✕" });
+    up.onclick = () => { [pending[i - 1], pending[i]] = [pending[i], pending[i - 1]]; renderPending(); };
+    down.onclick = () => { [pending[i + 1], pending[i]] = [pending[i], pending[i + 1]]; renderPending(); };
+    rm.onclick = () => { pending.splice(i, 1); renderPending(); };
+    ul.append(el("li", {}, el("span", { textContent: (i + 1) + ". " + f.name + " (" + fmtMB(f.size) + ")" }), up, down, rm));
+  });
+}
+
+$("tracks").onchange = e => {
+  pending.push(...Array.from(e.target.files).sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true })));
+  e.target.value = "";
+  renderPending();
+};
+
+/* ---------- cover ---------- */
+
+function loadImage(file) {
+  return new Promise((resolve, reject) => {
+    const url = URL.createObjectURL(file), img = new Image();
+    img.onload = () => { URL.revokeObjectURL(url); resolve(img); };
+    img.onerror = () => { URL.revokeObjectURL(url); reject(new Error("cannot read the cover picture")); };
+    img.src = url;
+  });
+}
+
+function squareCover(img, px) {
+  const c = document.createElement("canvas");
+  c.width = c.height = px;
+  const ctx = c.getContext("2d");
+  const s = Math.min(img.naturalWidth, img.naturalHeight);
+  ctx.fillStyle = "#fff";
+  ctx.fillRect(0, 0, px, px);
+  ctx.drawImage(img, (img.naturalWidth - s) / 2, (img.naturalHeight - s) / 2, s, s, 0, 0, px, px);
+  return c;
+}
+
+$("cover").onchange = async e => {
+  const f = e.target.files[0];
+  const c = $("cover-prev"), ctx = c.getContext("2d");
+  ctx.clearRect(0, 0, c.width, c.height);
+  if (!f) return;
+  try { ctx.drawImage(squareCover(await loadImage(f), 120), 0, 0); } catch (err) { setStatus(err.message, "err"); }
+};
+
+async function coverBlob(file) {
+  const c = squareCover(await loadImage(file), COVER_PX);
+  // canvas JPEGs are baseline, which the player decodes fastest
+  return new Promise((res, rej) => c.toBlob(b => b ? res(b) : rej(new Error("cannot encode the cover")), "image/jpeg", 0.88));
+}
+
+/* ---------- audio ---------- */
+
+// Returns the offset of the first MP3 frame if the file is MPEG-1/2 Layer III (what the player decodes), else -1.
+async function mp3Start(file) {
+  const head = new Uint8Array(await file.slice(0, 10).arrayBuffer());
+  let p = 0;
+  if (head[0] === 0x49 && head[1] === 0x44 && head[2] === 0x33)
+    p = 10 + ((head[6] & 0x7f) << 21 | (head[7] & 0x7f) << 14 | (head[8] & 0x7f) << 7 | (head[9] & 0x7f)) + ((head[5] & 0x10) ? 10 : 0);
+  const win = new Uint8Array(await file.slice(p, p + 8192).arrayBuffer());
+  for (let i = 0; i + 4 < win.length; i++) {
+    if (win[i] !== 0xff || (win[i + 1] & 0xe0) !== 0xe0) continue;
+    const ver = (win[i + 1] >> 3) & 3, layer = (win[i + 1] >> 1) & 3, br = win[i + 2] >> 4, sr = (win[i + 2] >> 2) & 3;
+    if ((ver === 3 || ver === 2) && layer === 1 && br !== 0 && br !== 15 && sr !== 3) return p + i;
+  }
+  return -1;
+}
+
+function loadLame() {
+  if (window.lamejs && lamejs.Mp3Encoder) return Promise.resolve();
+  return new Promise((res, rej) => {
+    const s = document.createElement("script");
+    s.src = "/lame.min.js";
+    s.onload = res;
+    s.onerror = () => rej(new Error("cannot load the MP3 encoder"));
+    document.head.append(s);
+  });
+}
+
+async function convertToMp3(file, onprog) {
+  await loadLame();
+  const AC = window.AudioContext || window.webkitAudioContext;
+  const ctx = new AC({ sampleRate: 44100 });
+  let audio;
+  try { audio = await ctx.decodeAudioData(await file.arrayBuffer()); }
+  catch (e) { throw new Error("this browser cannot read " + file.name); }
+  finally { ctx.close(); }
+
+  const stereo = audio.numberOfChannels > 1;
+  const left = audio.getChannelData(0), right = stereo ? audio.getChannelData(1) : null;
+  const enc = new lamejs.Mp3Encoder(stereo ? 2 : 1, audio.sampleRate, 160);
+  const i16 = (src, from, to) => {
+    const o = new Int16Array(to - from);
+    for (let i = from; i < to; i++) o[i - from] = Math.max(-1, Math.min(1, src[i])) * 32767;
+    return o;
+  };
+  const parts = [], BLOCK = 1152;
+  for (let i = 0, n = 0; i < left.length; i += BLOCK, n++) {
+    const end = Math.min(i + BLOCK, left.length);
+    const out = stereo ? enc.encodeBuffer(i16(left, i, end), i16(right, i, end)) : enc.encodeBuffer(i16(left, i, end));
+    if (out.length) parts.push(out);
+    if (n % 100 === 0) { onprog(i / left.length); await new Promise(r => setTimeout(r)); }
+  }
+  parts.push(enc.flush());
+  return new Blob(parts, { type: "audio/mpeg" });
+}
+
+/* ---------- upload ---------- */
+
+const badChars = /[\\\/:*?"<>|\x00-\x1f]/g;
+function cleanName(s, max) { return s.replace(badChars, "").replace(/[. ]+$/, "").trim().slice(0, max); }
+
+function trackFileName(original, number) {
+  let base = original.replace(/\.[^.]*$/, "").replace(/^\s*\d{1,3}\s*[-._)]*\s*/, "");
+  base = cleanName(base, 60) || "track";
+  return pad(number, 2) + "_" + base + ".mp3";
+}
+
+$("upload").onclick = async () => {
+  if (busy) return;
+  const album = cleanName($("album").value, 60);
+  const coverFile = $("cover").files[0];
+  if (!album) return setStatus("Please enter an album name.", "err");
+  if (!pending.length && !coverFile) return setStatus("Choose a cover and/or some songs.", "err");
+
+  busy = true;
+  $("upload").disabled = true;
+  try {
+    if (coverFile) {
+      setStatus("Preparing cover ...");
+      await xhr("PUT", `/api/file?album=${q(album)}&file=cover.jpg`, await coverBlob(coverFile), setProgress);
+    }
+    const existing = library.albums.find(a => a.name.toLowerCase() === album.toLowerCase());
+    let next = 1;
+    if (existing) for (const t of existing.tracks) { const m = /^(\d+)_/.exec(t.name); if (m) next = Math.max(next, +m[1] + 1); }
+
+    for (let i = 0; i < pending.length; i++) {
+      const f = pending[i], label = `Song ${i + 1} of ${pending.length}: ${f.name}`;
+      setProgress(0);
+      let blob;
+      const start = await mp3Start(f);
+      if (start >= 0) {
+        blob = f.slice(start, f.size, "audio/mpeg");
+      } else {
+        setStatus(label + " - converting to MP3 ...");
+        blob = await convertToMp3(f, p => setProgress(p));
+      }
+      setStatus(label + " - uploading ...");
+      await xhr("PUT", `/api/file?album=${q(album)}&file=${q(trackFileName(f.name, next++))}`, blob, setProgress);
+    }
+    setProgress(1);
+    setStatus("Done. Press \"Done\" at the top when you have finished adding music.", "ok");
+    pending = [];
+    renderPending();
+    $("cover").value = "";
+    $("cover-prev").getContext("2d").clearRect(0, 0, 120, 120);
+    await refresh();
+  } catch (e) {
+    setStatus("Failed: " + e.message, "err");
+  } finally {
+    busy = false;
+    $("upload").disabled = false;
+  }
+};
+
+/* ---------- firmware ---------- */
+
+$("fw-go").onclick = async () => {
+  const f = $("fw").files[0], st = $("fw-status");
+  if (!f) return st.textContent = "Choose the -ota.bin file first.";
+  if (!confirm("Install this firmware? The player restarts.")) return;
+  $("fw-go").disabled = true;
+  st.textContent = "Uploading ...";
+  try {
+    await xhr("POST", "/api/ota", f, p => $("fw-progress").style.width = Math.round(p * 100) + "%");
+    st.textContent = "Installed. The player is restarting; you can close this page.";
+  } catch (e) {
+    st.textContent = "Failed: " + e.message;
+    $("fw-go").disabled = false;
+  }
+};
+
+/* ---------- finish ---------- */
+
+$("done").onclick = async () => {
+  if (busy && !confirm("An upload is still running. Stop and finish anyway?")) return;
+  try { await xhr("POST", "/api/done"); } catch (e) { /* the player may already be gone */ }
+  document.body.replaceChildren(el("main", {}, el("h1", { textContent: "All done" }),
+    el("p", { textContent: "The player is back in normal mode. You can close this page." })));
+};
+
+window.addEventListener("beforeunload", e => { if (busy) { e.preventDefault(); e.returnValue = ""; } });
+refresh().catch(e => setStatus("Cannot reach the player: " + e.message, "err"));
+</script>
+</body>
+</html>

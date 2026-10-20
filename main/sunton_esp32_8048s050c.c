@@ -1,0 +1,394 @@
+/**
+ * @file sunton_esp32_8048s050c.c
+ * @author Sven Fabricius (sven.fabricius@livediesel.de)
+ * @brief
+ * @version 0.1
+ * @date 2024-09-09
+ *
+ * @copyright Copyright (c) 2024
+ *
+ */
+
+#include "freertos/FreeRTOS.h"
+#include "esp_attr.h"
+#include "esp_timer.h"
+#include "esp_lcd_panel_ops.h"
+#include "esp_lcd_panel_rgb.h"
+#include "esp_lcd_touch_gt911.h"
+#include "driver/i2c_master.h"
+#include "driver/gpio.h"
+#include "driver/ledc.h"
+#include "lvgl.h"
+
+#include "display_board.h"
+#include "sunton_esp32_8048s050c.h"
+
+const esp_lcd_rgb_panel_config_t panel_config = {
+    .data_width = 16,
+    .bits_per_pixel = 16,
+#if CONFIG_SUNTON_ESP32_DOUBLE_FB
+    .num_fbs = 2,
+#else
+    .num_fbs = 1,
+#endif
+#if CONFIG_SUNTON_ESP32_USE_BOUNCE_BUFFER
+    .bounce_buffer_size_px = 10 * SUNTON_ESP32_LCD_WIDTH,
+    .clk_src = LCD_CLK_SRC_PLL240M,
+    .timings = {
+        .pclk_hz = (16*1000000),
+#else
+    .clk_src = LCD_CLK_SRC_PLL160M,
+    .timings = {
+        .pclk_hz = (16*1000000),    /* 12 MHz makes this panel lose sync (RGBW test pattern), do not lower */
+#endif
+        .hsync_pulse_width = 4,
+        .hsync_back_porch = 8,
+        .hsync_front_porch = 8,
+        .vsync_pulse_width = 4,
+        .vsync_back_porch = 8,
+        .vsync_front_porch = 8,
+        .h_res = SUNTON_ESP32_LCD_WIDTH,
+        .v_res = SUNTON_ESP32_LCD_HEIGHT,
+        .flags = {
+            .pclk_active_neg = true,
+        },
+    },
+    .dma_burst_size = 64,
+    .hsync_gpio_num = GPIO_NUM_39,
+    .vsync_gpio_num = GPIO_NUM_41,
+    .de_gpio_num = GPIO_NUM_40,
+    .pclk_gpio_num = GPIO_NUM_42,
+    .data_gpio_nums = {
+        GPIO_NUM_8, GPIO_NUM_3, GPIO_NUM_46, GPIO_NUM_9, GPIO_NUM_1,              // B0 - B4
+        GPIO_NUM_5, GPIO_NUM_6, GPIO_NUM_7, GPIO_NUM_15, GPIO_NUM_16, GPIO_NUM_4, // G0 - G5
+        GPIO_NUM_45, GPIO_NUM_48, GPIO_NUM_47, GPIO_NUM_21, GPIO_NUM_14,          // R0 - R4
+    },
+    .disp_gpio_num = GPIO_NUM_NC,
+    .flags = {
+        .fb_in_psram = true,
+    },
+};
+
+static TaskHandle_t lvgl_port_task_handle = NULL;
+static esp_timer_handle_t lvgl_tick_timer_handle = NULL;
+static lv_indev_t * indev_touchpad = NULL;
+static esp_lcd_panel_handle_t s_panel = NULL;
+
+/* Pixel clock while WiFi is on: WiFi/PSRAM traffic starves the framebuffer DMA at the normal clock and the
+ * picture shifts sideways. The panel just refreshes slower for that time. */
+#define SUNTON_ESP32_PCLK_LOW_BANDWIDTH_HZ      (12 * 1000000)
+
+void board_backlight_init(void)
+{
+    ledc_timer_config_t ledc_timer = {
+        .speed_mode      = LEDC_LOW_SPEED_MODE,
+        .duty_resolution = LEDC_TIMER_8_BIT,
+        .timer_num       = SUNTON_ESP32_BACKLIGHT_LEDC_TIMER,
+        .freq_hz         = 4000,  // Set output frequency at 4 kHz
+        .clk_cfg         = LEDC_USE_RC_FAST_CLK,
+    };
+    ESP_ERROR_CHECK(ledc_timer_config(&ledc_timer));
+
+    // Prepare and then apply the LEDC PWM channel configuration
+    ledc_channel_config_t ledc_channel = {
+        .gpio_num   = SUNTON_ESP32_PIN_BCKL,
+        .speed_mode = LEDC_LOW_SPEED_MODE,
+        .channel    = SUNTON_ESP32_BACKLIGHT_LEDC_CHANNEL,
+        .intr_type  = LEDC_INTR_DISABLE,
+        .timer_sel  = SUNTON_ESP32_BACKLIGHT_LEDC_TIMER,
+        .duty       = 0, // Set duty to 0%
+        .hpoint     = 0,
+    };
+    ESP_ERROR_CHECK(ledc_channel_config(&ledc_channel));
+    ESP_ERROR_CHECK(ledc_set_duty(LEDC_LOW_SPEED_MODE, SUNTON_ESP32_BACKLIGHT_LEDC_CHANNEL, 255));
+    ESP_ERROR_CHECK(ledc_update_duty(LEDC_LOW_SPEED_MODE, SUNTON_ESP32_BACKLIGHT_LEDC_CHANNEL));
+}
+
+/* Called by esp_lcd driver when draw_bitmap() has finished updating the framebuffer.
+ * This is the correct place to call lv_display_flush_ready() for BOTH single and
+ * double framebuffer modes, because the driver invokes on_color_trans_done from
+ * within esp_lcd_panel_draw_bitmap() after the cache is flushed and the DMA
+ * redirect is complete. */
+static bool IRAM_ATTR lvgl_port_flush_ready(esp_lcd_panel_handle_t panel, const esp_lcd_rgb_panel_event_data_t *event_data, void *user_ctx)
+{
+    lv_display_t *disp = (lv_display_t *)user_ctx;
+    lv_display_flush_ready(disp);
+    return false;
+}
+
+static void lvgl_disp_flush(lv_display_t * disp, const lv_area_t * area, uint8_t * px_map)
+{
+    esp_lcd_panel_handle_t panel_handle = (esp_lcd_panel_handle_t)lv_display_get_user_data(disp);
+    esp_lcd_panel_draw_bitmap(panel_handle, area->x1, area->y1, area->x2 + 1, area->y2 + 1, px_map);
+};
+
+static void lvgl_port_task(void *arg)
+{
+#ifdef CONFIG_LV_OS_FREERTOS
+    // required to ensure the notify task ID is correct
+    lv_draw_init();
+#endif
+    uint32_t task_delay_ms = CONFIG_LVGL_TASK_MAX_DELAY_MS;
+    while (1)
+    {
+        task_delay_ms = lv_timer_handler();
+        if (task_delay_ms > CONFIG_LVGL_TASK_MAX_DELAY_MS)
+        {
+            task_delay_ms = CONFIG_LVGL_TASK_MAX_DELAY_MS;
+        }
+        else if (task_delay_ms < CONFIG_LVGL_TASK_MIN_DELAY_MS)
+        {
+            task_delay_ms = CONFIG_LVGL_TASK_MIN_DELAY_MS;
+        }
+        vTaskDelay(pdMS_TO_TICKS(task_delay_ms));
+    }
+}
+
+//region - LVGL Tick Timer
+static void lvgl_tick(void *arg)
+{
+    /* Tell LVGL how many milliseconds has elapsed */
+    lv_tick_inc(LVGL_TICK_PERIOD_MS);
+}
+
+lv_display_t *board_lcd_init(void)
+{
+    void *buf1 = NULL;
+    void *buf2 = NULL;
+    esp_lcd_panel_handle_t panel_handle = NULL;
+
+    // create lcd panel
+    ESP_ERROR_CHECK(esp_lcd_new_rgb_panel(&panel_config, &panel_handle));
+    ESP_ERROR_CHECK(esp_lcd_panel_reset(panel_handle));
+    ESP_ERROR_CHECK(esp_lcd_panel_init(panel_handle));
+    s_panel = panel_handle;
+
+    // assign callback and handle
+    lv_init();
+    lv_display_t * disp = lv_display_create(SUNTON_ESP32_LCD_WIDTH, SUNTON_ESP32_LCD_HEIGHT);
+    lv_display_set_user_data(disp, panel_handle);
+    lv_display_set_flush_cb(disp, lvgl_disp_flush);
+
+#if CONFIG_SUNTON_ESP32_DOUBLE_FB
+    ESP_ERROR_CHECK(esp_lcd_rgb_panel_get_frame_buffer(panel_handle, 2, &buf1, &buf2));
+    lv_display_set_buffers(disp, buf1, buf2, SUNTON_ESP32_LCD_WIDTH * SUNTON_ESP32_LCD_HEIGHT * sizeof(lv_color_t), LV_DISPLAY_RENDER_MODE_DIRECT);
+#else
+    size_t buffer_size = SUNTON_ESP32_LCD_WIDTH * 30 * sizeof(lv_color_t);
+    //buf1 = esp_lcd_rgb_alloc_draw_buffer(panel_handle, buffer_size, 0); // Future use, currently not in release
+    buf1 = heap_caps_malloc(buffer_size, MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+    lv_display_set_buffers(disp, buf1, buf2, buffer_size, LV_DISPLAY_RENDER_MODE_PARTIAL);
+#endif
+
+    /* Register on_color_trans_done for all modes. The driver calls this from within
+     * esp_lcd_panel_draw_bitmap() once the cache is flushed and the DMA is updated,
+     * which is the correct moment to signal lv_display_flush_ready(). */
+    const esp_lcd_rgb_panel_event_callbacks_t cbs = {
+        .on_color_trans_done = lvgl_port_flush_ready,
+    };
+    ESP_ERROR_CHECK(esp_lcd_rgb_panel_register_event_callbacks(panel_handle, &cbs, disp));
+
+    // Tick interface for LVGL (using esp_timer to generate 2ms periodic event)
+    const esp_timer_create_args_t lvgl_tick_timer_args = {
+        .callback = &lvgl_tick,
+        .name = "lvgl_tick"
+    };
+    ESP_ERROR_CHECK(esp_timer_create(&lvgl_tick_timer_args, &lvgl_tick_timer_handle));
+    ESP_ERROR_CHECK(esp_timer_start_periodic(lvgl_tick_timer_handle, LVGL_TICK_PERIOD_MS * 1000));
+
+    /* core 1: core 0 runs the bounce-buffer refill ISR (and WiFi), which would otherwise eat most of the rendering time */
+    xTaskCreatePinnedToCore(lvgl_port_task, "lvgl_port_task", (CONFIG_LVGL_TASK_STACK_SIZE * 1024), NULL, CONFIG_LVGL_TASK_PRIORITY, &lvgl_port_task_handle, 1);
+
+    return disp;
+}
+
+void board_lcd_set_low_bandwidth(bool low)
+{
+    /* Changing the pixel clock at runtime made this panel lose sync (black screen, RGBW test pattern), so it is
+     * left alone. Display stability under WiFi relies on CONFIG_LCD_RGB_RESTART_IN_VSYNC instead. */
+    (void)low;
+    (void)s_panel;
+    (void)SUNTON_ESP32_PCLK_LOW_BANDWIDTH_HZ;
+}
+
+i2c_master_bus_handle_t board_i2c_master(void)
+{
+    i2c_master_bus_handle_t touch_i2c_bus_handle = NULL;
+    const i2c_master_bus_config_t touch_i2c_bus_config = {
+        .clk_source = I2C_CLK_SRC_DEFAULT,
+        .i2c_port = -1,
+        .scl_io_num = SUNTON_ESP32_TOUCH_PIN_I2C_SCL,
+        .sda_io_num = SUNTON_ESP32_TOUCH_PIN_I2C_SDA,
+        .glitch_ignore_cnt = 7,
+#if CONFIG_SUNTON_ESP32_TOUCH_I2C_PULLUP
+        .flags.enable_internal_pullup = 1,
+#endif
+    };
+    ESP_ERROR_CHECK(i2c_new_master_bus(&touch_i2c_bus_config, &touch_i2c_bus_handle));
+    return touch_i2c_bus_handle;
+}
+
+/* Coordinate range the GT911 reports (from its config registers); probed in touch_init() */
+static uint16_t gt911_x_max = SUNTON_ESP32_LCD_WIDTH;
+static uint16_t gt911_y_max = SUNTON_ESP32_LCD_HEIGHT;
+
+#if SUNTON_ESP32_TOUCH_DEBUG
+static uint8_t gt911_cfg_version, gt911_cfg_switch1;
+static bool gt911_cfg_valid;
+static uint16_t dbg_raw_x, dbg_raw_y;
+static lv_obj_t *dbg_label, *dbg_dot;
+#endif
+
+static void process_coordinates(esp_lcd_touch_handle_t tp, uint16_t *x, uint16_t *y, uint16_t *strength, uint8_t *point_num, uint8_t max_point_num)
+{
+    for (uint8_t i = 0; i < *point_num; i++)
+    {
+#if SUNTON_ESP32_TOUCH_DEBUG
+        if (i == 0)
+        {
+            dbg_raw_x = x[0];
+            dbg_raw_y = y[0];
+        }
+#endif
+        x[i] = (uint32_t)x[i] * SUNTON_ESP32_LCD_WIDTH / gt911_x_max;
+        y[i] = (uint32_t)y[i] * SUNTON_ESP32_LCD_HEIGHT / gt911_y_max;
+    }
+}
+
+#if SUNTON_ESP32_TOUCH_DEBUG
+static void touch_debug_create(void)
+{
+    lv_lock();
+    dbg_label = lv_label_create(lv_layer_top());
+    lv_obj_remove_flag(dbg_label, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_set_style_bg_color(dbg_label, lv_color_black(), 0);
+    lv_obj_set_style_bg_opa(dbg_label, LV_OPA_70, 0);
+    lv_obj_set_style_text_color(dbg_label, lv_color_white(), 0);
+    lv_obj_set_style_pad_all(dbg_label, 4, 0);
+    lv_obj_align(dbg_label, LV_ALIGN_TOP_LEFT, 0, 0);
+    lv_label_set_text_fmt(dbg_label, "GT911 %s cfg v%u range %ux%u sw=0x%02X\nlcd %ux%u - touch to see raw/mapped",
+                          gt911_cfg_valid ? "ok" : "CFG READ FAILED", gt911_cfg_version,
+                          gt911_x_max, gt911_y_max, gt911_cfg_switch1,
+                          SUNTON_ESP32_LCD_WIDTH, SUNTON_ESP32_LCD_HEIGHT);
+
+    dbg_dot = lv_obj_create(lv_layer_top());
+    lv_obj_remove_flag(dbg_dot, LV_OBJ_FLAG_CLICKABLE | LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_set_size(dbg_dot, 14, 14);
+    lv_obj_set_style_radius(dbg_dot, LV_RADIUS_CIRCLE, 0);
+    lv_obj_set_style_bg_color(dbg_dot, lv_color_make(255, 0, 0), 0);
+    lv_obj_set_style_border_width(dbg_dot, 0, 0);
+    lv_obj_add_flag(dbg_dot, LV_OBJ_FLAG_HIDDEN);
+    lv_unlock();
+}
+#endif
+
+static void touchpad_read(lv_indev_t *indev, lv_indev_data_t *data)
+{
+    esp_lcd_touch_handle_t tp = (esp_lcd_touch_handle_t)lv_indev_get_user_data(indev);
+
+    esp_lcd_touch_point_data_t data_point;
+    uint8_t touchpad_cnt = 0;
+
+    esp_lcd_touch_read_data(tp);
+
+    esp_lcd_touch_get_data(tp, &data_point, &touchpad_cnt, 1);
+    if (touchpad_cnt > 0)
+    {
+        data->point.x = data_point.x;
+        data->point.y = data_point.y;
+        data->state = LV_INDEV_STATE_PRESSED;
+#if SUNTON_ESP32_TOUCH_DEBUG
+        if (dbg_label)
+        {
+            /* runs inside the LVGL timer handler, so the LVGL lock is already held */
+            lv_label_set_text_fmt(dbg_label, "GT911 %s cfg v%u range %ux%u sw=0x%02X\nraw %u,%u -> lcd %d,%d (of %ux%u)",
+                                  gt911_cfg_valid ? "ok" : "CFG READ FAILED", gt911_cfg_version,
+                                  gt911_x_max, gt911_y_max, gt911_cfg_switch1,
+                                  dbg_raw_x, dbg_raw_y, (int)data->point.x, (int)data->point.y,
+                                  SUNTON_ESP32_LCD_WIDTH, SUNTON_ESP32_LCD_HEIGHT);
+            lv_obj_set_pos(dbg_dot, data->point.x - 7, data->point.y - 7);
+            lv_obj_remove_flag(dbg_dot, LV_OBJ_FLAG_HIDDEN);
+        }
+#endif
+    }
+    else
+    {
+        data->state = LV_INDEV_STATE_RELEASED;
+    }
+}
+
+static esp_lcd_touch_handle_t touch_init(i2c_master_bus_handle_t i2c_master)
+{
+    esp_lcd_panel_io_handle_t gt911_touch_io_handle = NULL;
+    const esp_lcd_panel_io_i2c_config_t gt911_touch_io_config = {
+        .dev_addr = SUNTON_ESP32_TOUCH_ADDRESS,
+        .on_color_trans_done = NULL,
+        .user_ctx = NULL,
+        .control_phase_bytes = 1,
+        .dc_bit_offset = 0,
+        .lcd_cmd_bits = 16,
+        .lcd_param_bits = 0,
+        .flags = {
+            .dc_low_on_data = 0,
+            .disable_control_phase = 1,
+        },
+        .scl_speed_hz = 400000,
+    };
+    ESP_ERROR_CHECK(esp_lcd_new_panel_io_i2c(i2c_master, &gt911_touch_io_config, &gt911_touch_io_handle));
+
+    esp_lcd_touch_handle_t touch_handle = NULL;
+    esp_lcd_touch_io_gt911_config_t tp_gt911_config = {
+        .dev_addr = gt911_touch_io_config.dev_addr,
+    };
+    const esp_lcd_touch_config_t gt911_touch_cfg = {
+        .x_max = SUNTON_ESP32_LCD_WIDTH,
+        .y_max = SUNTON_ESP32_LCD_HEIGHT,
+        .rst_gpio_num = SUNTON_ESP32_TOUCH_PIN_RST,
+        .int_gpio_num = SUNTON_ESP32_TOUCH_PIN_INT,
+        .levels = {
+            .reset = 0,
+            .interrupt = 0,
+        },
+        .flags = {
+            .swap_xy = 0,
+            .mirror_x = 0,
+            .mirror_y = 0,
+        },
+        .driver_data = &tp_gt911_config,
+        .process_coordinates = process_coordinates, // callback to fix coordinates between gt911 and display
+        .interrupt_callback = NULL,
+    };
+    ESP_ERROR_CHECK(esp_lcd_touch_new_i2c_gt911(gt911_touch_io_handle, &gt911_touch_cfg, &touch_handle));
+
+    /* Probe the coordinate range configured inside the GT911: 0x8047 version, 0x8048/49 X max,
+     * 0x804A/4B Y max, 0x804C touch count, 0x804D Module_Switch1 (bit 3 = X/Y swap). */
+    uint8_t cfg[7] = {0};
+    if (esp_lcd_panel_io_rx_param(gt911_touch_io_handle, 0x8047, cfg, sizeof(cfg)) == ESP_OK)
+    {
+        uint16_t xm = cfg[1] | (cfg[2] << 8);
+        uint16_t ym = cfg[3] | (cfg[4] << 8);
+        if (xm >= 64 && xm <= 4096 && ym >= 64 && ym <= 4096)
+        {
+            gt911_x_max = xm;
+            gt911_y_max = ym;
+#if SUNTON_ESP32_TOUCH_DEBUG
+            gt911_cfg_valid = true;
+#endif
+        }
+#if SUNTON_ESP32_TOUCH_DEBUG
+        gt911_cfg_version = cfg[0];
+        gt911_cfg_switch1 = cfg[6];
+#endif
+    }
+    return touch_handle;
+}
+
+void board_touch_init(i2c_master_bus_handle_t i2c_master)
+{
+    indev_touchpad = lv_indev_create();
+    lv_indev_set_type(indev_touchpad, LV_INDEV_TYPE_POINTER);
+    lv_indev_set_user_data(indev_touchpad, touch_init(i2c_master));
+    lv_indev_set_read_cb(indev_touchpad, touchpad_read);
+#if SUNTON_ESP32_TOUCH_DEBUG
+    touch_debug_create();
+#endif
+}
