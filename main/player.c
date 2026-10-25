@@ -24,7 +24,7 @@ static const char *TAG = "player";
 #define PLAYER_DOWNMIX_TO_MONO  1   /* 1: stereo -> mono on both channels (one speaker), 0: keep stereo */
 #define DEFAULT_VOLUME  5
 
-typedef enum { CMD_PLAY_ALBUM, CMD_TOGGLE, CMD_STOP, CMD_NEXT, CMD_PREV, CMD_VOL_UP, CMD_VOL_DOWN, CMD_RESET, CMD_SHUFFLE, CMD_LIBRARY } cmd_id_t;
+typedef enum { CMD_PLAY_ALBUM, CMD_TOGGLE, CMD_STOP, CMD_NEXT, CMD_PREV, CMD_VOL_UP, CMD_VOL_DOWN, CMD_RESET, CMD_SHUFFLE, CMD_LIBRARY, CMD_VOLUME } cmd_id_t;
 
 typedef struct {
     cmd_id_t id;
@@ -135,7 +135,7 @@ static void i2s_set_on(bool on)
 {
     /* The I2S output stays enabled once started (auto_clear sends silence while nothing is written): switching the
      * clocks and the amplifier on and off at every play/pause/stop was a suspect for glitches on the display.
-     * Only the sample-rate change below and a reset (upload mode) really stop the channel. */
+     * Only the sample-rate change below really stops the channel. */
     if (on == s_i2s_on || (!on && !s_i2s_stoppable))
         return;
     if (on)
@@ -159,10 +159,15 @@ static void i2s_set_rate(uint32_t rate)
     i2s_set_on(was_on);
 }
 
-/* Perceptual volume: gain = (level / max)^2 in Q15. */
+/* Perceptual volume: gain = floor + (1 - floor) * (level / max)^2 in Q15. The floor keeps the lowest setting
+ * quietly audible instead of muted (PLAYER_MIN_GAIN_PERMILLE 12 = 1.2 % = -38 dB). */
+#define PLAYER_MIN_GAIN_PERMILLE    12
+
 static int32_t volume_gain(void)
 {
-    return (int32_t)(32768LL * s_volume * s_volume / (PLAYER_VOLUME_MAX * PLAYER_VOLUME_MAX));
+    int64_t one = 32768;
+    int64_t floor = one * PLAYER_MIN_GAIN_PERMILLE / 1000;
+    return (int32_t)(floor + (one - floor) * s_volume * s_volume / (PLAYER_VOLUME_MAX * PLAYER_VOLUME_MAX));
 }
 
 /* Applies a command. Returns true when the track being decoded must be abandoned. */
@@ -229,9 +234,6 @@ static bool handle_cmd(const cmd_t *c)
         s_n_albums = 0;
         s_track = 0;
         s_state = PLAYER_STOPPED;
-        s_i2s_stoppable = true;     /* upload mode: I2S really off while WiFi is on, it restarts with the next track */
-        i2s_set_on(false);
-        s_i2s_stoppable = false;
         notify();
         xSemaphoreGive(s_reset_sem);
         return true;
@@ -268,6 +270,10 @@ static bool handle_cmd(const cmd_t *c)
         notify();
         return false;
     }
+    case CMD_VOLUME:
+        s_volume = c->track > PLAYER_VOLUME_MAX ? PLAYER_VOLUME_MAX : (int)c->track;
+        notify();
+        return false;
     case CMD_LIBRARY:
         s_albums = c->album;
         s_n_albums = c->track;
@@ -504,6 +510,7 @@ void player_play_album(const library_album_t *album, size_t track)
     if (album && track < album->n_tracks)
         send(CMD_PLAY_ALBUM, album, track);
 }
+void player_set_volume(int level) { send(CMD_VOLUME, NULL, level < 0 ? 0 : (size_t)level); }
 void player_set_shuffle(bool on) { send(CMD_SHUFFLE, NULL, on ? 1 : 0); }
 void player_set_library(const library_album_t *albums, size_t n) { send(CMD_LIBRARY, albums, n); }
 int player_album_index(void) { return s_cur_album; }

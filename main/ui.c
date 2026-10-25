@@ -12,6 +12,8 @@
 #include "sunton_esp32_8048s050c.h"
 #include "upload_mode.h"
 #include "sd_card.h"
+#include "settings.h"
+#include "volume_pot.h"
 
 #define BAR_H           120
 #define BTN_H           100
@@ -22,6 +24,10 @@
 #define ARROW_MARGIN    16
 #define POLL_MS         100
 #define SD_RETRY_MS     2000    /* no card mounted: look again this often */
+#define BATT_WARN_PERCENT       10      /* red banner "Battery low" (hidden again above +3) */
+#define BATT_SHUTDOWN_PERCENT   3       /* this low for BATT_SHUTDOWN_MS: switch off */
+#define BATT_SHUTDOWN_MS        20000
+#define BATT_EMPTY_SCREEN_OFF_MS 10000  /* battery empty: backlight off after this long without touch */
 #define AUTOSTART_MS    3000    /* browsing albums stops the music; this long after the last arrow tap the shown album starts */
 #define SCROLL_LIMIT    24      /* px a finger may move before a tap becomes a scroll (shaky hands) */
 #define DONE_DELAY_MS   600     /* let the browser receive the reply of /api/done before WiFi goes down */
@@ -49,6 +55,10 @@ static bool s_dirty;            /* shown album changed: poll() must refresh the 
 static lv_obj_t *s_play_label;
 static lv_obj_t *s_vol_bar;
 static lv_obj_t *s_shuffle_btn;
+static lv_obj_t *s_batt_warn;      /* red banner at the top while the battery is nearly empty */
+static bool s_shutting_down;
+static int s_backlight = 255;      /* brightness that is set at the moment */
+static lv_obj_t *s_battery;        /* battery icon + percent, top left; only with the ADS1115 and a battery */
 static lv_obj_t *s_arrows[2];       /* previous / next album; hidden in shuffle mode (the screen follows the music) */
 static bool s_shuffle_on;
 static lv_obj_t *s_upload_box;      /* modal message box while upload mode is on */
@@ -189,6 +199,9 @@ static void on_cover(lv_event_t *e)
 
 static lv_obj_t *make_card(lv_obj_t *parent, size_t idx);
 
+static void refresh_card(void);
+static void start_shuffle_at_boot(void);
+
 static void show_album(int idx)
 {
     s_shown = idx;
@@ -196,6 +209,7 @@ static void show_album(int idx)
         lv_obj_delete(s_card);
     s_card = make_card(s_content, (size_t)idx);
     lv_obj_align(s_card, LV_ALIGN_TOP_MID, 0, 0);
+    refresh_card();     /* right state at once: a change made later in poll() would redraw the cover a second time */
     s_dirty = true;
 }
 
@@ -424,14 +438,22 @@ static void create_controls(lv_obj_t *scr)
     lv_obj_remove_flag(bar, LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_set_flex_flow(bar, LV_FLEX_FLOW_ROW);
     lv_obj_set_flex_align(bar, LV_FLEX_ALIGN_SPACE_EVENLY, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+    if (volume_pot_present())       /* no volume buttons: the rest sits closer together in the middle */
+    {
+        lv_obj_set_flex_align(bar, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+        lv_obj_set_style_pad_column(bar, 44, 0);
+    }
 
     make_bar_button(bar, LV_SYMBOL_PREV, 100, COL_BLUE, ACT_PREV);
     s_play_label = make_bar_button(bar, LV_SYMBOL_PLAY, 130, COL_GREEN, ACT_TOGGLE);
     make_bar_button(bar, LV_SYMBOL_NEXT, 100, COL_BLUE, ACT_NEXT);
     make_bar_button(bar, LV_SYMBOL_STOP, 100, COL_RED, ACT_STOP);
 
-    make_bar_button(bar, LV_SYMBOL_MINUS, 110, COL_BLUE, ACT_VOL_DOWN);
-    make_bar_button(bar, LV_SYMBOL_PLUS, 110, COL_BLUE, ACT_VOL_UP);
+    if (!volume_pot_present())      /* with a volume pot the buttons are not needed (fallback only) */
+    {
+        make_bar_button(bar, LV_SYMBOL_MINUS, 110, COL_BLUE, ACT_VOL_DOWN);
+        make_bar_button(bar, LV_SYMBOL_PLUS, 110, COL_BLUE, ACT_VOL_UP);
+    }
 
     /* shuffle: icon only, below the "previous album" arrow */
     s_shuffle_btn = make_button(scr, LV_SYMBOL_SHUFFLE, 80, 52, COL_CARD, ACT_SHUFFLE, &lv_font_montserrat_36);
@@ -462,9 +484,128 @@ static void create_header(lv_obj_t *scr)
     lv_obj_add_event_cb(btn, on_button, LV_EVENT_CLICKED, (void *)(intptr_t)ACT_WIFI);
     lv_obj_t *label = make_label(btn, LV_SYMBOL_WIFI, &lv_font_montserrat_36);
     lv_obj_center(label);
+
+    s_batt_warn = make_label(scr, LV_SYMBOL_WARNING " Battery low - please charge", &lv_font_montserrat_28);
+    lv_obj_set_size(s_batt_warn, LV_PCT(100), 56);
+    lv_obj_set_style_bg_color(s_batt_warn, lv_color_hex(COL_RED), 0);
+    lv_obj_set_style_bg_opa(s_batt_warn, LV_OPA_COVER, 0);
+    lv_obj_set_style_text_align(s_batt_warn, LV_TEXT_ALIGN_CENTER, 0);
+    lv_obj_set_style_pad_top(s_batt_warn, 12, 0);
+    lv_obj_align(s_batt_warn, LV_ALIGN_TOP_MID, 0, 0);
+    lv_obj_add_flag(s_batt_warn, LV_OBJ_FLAG_HIDDEN);
+
+    s_battery = make_label(scr, "", &lv_font_montserrat_20);
+    lv_obj_align(s_battery, LV_ALIGN_TOP_LEFT, 14, 12);
+    lv_obj_add_flag(s_battery, LV_OBJ_FLAG_HIDDEN);
+}
+
+/* Battery empty: tell the user and stop the music. The screen then goes dark 10 s after the last touch (see poll())
+ * and a touch shows the message again. Nothing is powered down: the board keeps drawing about 0.3 W, so a BMS with
+ * under-voltage cut-off is mandatory (README). */
+static void battery_shutdown(void)
+{
+    s_shutting_down = true;
+    player_stop();
+    lv_label_set_text(s_batt_warn, LV_SYMBOL_POWER " Battery empty - please charge");
+    lv_obj_remove_flag(s_batt_warn, LV_OBJ_FLAG_HIDDEN);
+    lv_display_trigger_activity(NULL);      /* keep the message on the screen for a while */
+}
+
+/* Battery symbol and percentage; shown only when the ADS1115 measures a battery. Changes only what differs. */
+static void update_battery(void)
+{
+    int percent;
+    float volts;
+    bool external;
+    static uint32_t low_since;
+    if (s_shutting_down)
+        return;
+    if (!battery_read(&percent, &volts, &external))
+    {
+        if (!lv_obj_has_flag(s_battery, LV_OBJ_FLAG_HIDDEN))
+            lv_obj_add_flag(s_battery, LV_OBJ_FLAG_HIDDEN);
+        if (!lv_obj_has_flag(s_batt_warn, LV_OBJ_FLAG_HIDDEN))
+            lv_obj_add_flag(s_batt_warn, LV_OBJ_FLAG_HIDDEN);
+        low_since = 0;
+        return;
+    }
+
+    bool warn_shown = !lv_obj_has_flag(s_batt_warn, LV_OBJ_FLAG_HIDDEN);
+    if (!external && percent <= BATT_WARN_PERCENT && !warn_shown)
+        lv_obj_remove_flag(s_batt_warn, LV_OBJ_FLAG_HIDDEN);
+    else if ((external || percent > BATT_WARN_PERCENT + 3) && warn_shown)
+        lv_obj_add_flag(s_batt_warn, LV_OBJ_FLAG_HIDDEN);
+
+    if (!external && percent <= BATT_SHUTDOWN_PERCENT)
+    {
+        if (!low_since)
+            low_since = lv_tick_get() | 1;
+        else if (lv_tick_elaps(low_since) > BATT_SHUTDOWN_MS)
+            battery_shutdown();
+    }
+    else
+    {
+        low_since = 0;
+    }
+    const char *symbol = external ? LV_SYMBOL_CHARGE
+                       : percent >= 80 ? LV_SYMBOL_BATTERY_FULL
+                       : percent >= 60 ? LV_SYMBOL_BATTERY_3
+                       : percent >= 35 ? LV_SYMBOL_BATTERY_2
+                       : percent >= 15 ? LV_SYMBOL_BATTERY_1
+                                       : LV_SYMBOL_BATTERY_EMPTY;
+    char text[24];
+    if (external)
+        snprintf(text, sizeof(text), "%s", symbol);
+    else
+        snprintf(text, sizeof(text), "%s %d%%", symbol, percent);
+    if (strcmp(lv_label_get_text(s_battery), text) != 0)
+        lv_label_set_text(s_battery, text);
+
+    lv_color_t color = external || percent >= 30 ? lv_color_white()
+                     : percent >= 15 ? lv_color_hex(COL_ACCENT) : lv_color_hex(COL_RED);
+    if (!lv_color_eq(lv_obj_get_style_text_color(s_battery, LV_PART_MAIN), color))
+        lv_obj_set_style_text_color(s_battery, color, 0);
+    if (lv_obj_has_flag(s_battery, LV_OBJ_FLAG_HIDDEN))
+        lv_obj_remove_flag(s_battery, LV_OBJ_FLAG_HIDDEN);
 }
 
 /* ---------- periodic update ---------- */
+
+/* Frame, song title and badge of the shown cover. Only touches what really changed, since every style change
+ * repaints the whole 360x360 cover. */
+static void refresh_card(void)
+{
+    if (!s_card)
+        return;
+    int state = s_ev_state, track = s_ev_track;
+    bool active = state != PLAYER_STOPPED && s_shown == s_current;
+
+    int border = active ? 8 : 0;
+    if (lv_obj_get_style_border_width(s_card, LV_PART_MAIN) != border)
+        lv_obj_set_style_border_width(s_card, border, 0);
+
+    char text[128];
+    if (active && track >= 0 && (size_t)track < s_albums[s_shown].n_tracks)
+        song_title(s_albums[s_shown].tracks[track], text, sizeof(text));
+    else
+        snprintf(text, sizeof(text), "%s", s_albums[s_shown].title);
+    if (strcmp(lv_label_get_text(s_title), text) != 0)
+        lv_label_set_text(s_title, text);
+
+    if (active)
+    {
+        snprintf(text, sizeof(text), "%s %d/%u", state == PLAYER_PLAYING ? LV_SYMBOL_PLAY : LV_SYMBOL_PAUSE, track + 1,
+                 (unsigned)s_albums[s_shown].n_tracks);
+        if (strcmp(lv_label_get_text(s_badge), text) != 0)
+            lv_label_set_text(s_badge, text);
+        if (lv_obj_has_flag(s_badge, LV_OBJ_FLAG_HIDDEN))
+            lv_obj_remove_flag(s_badge, LV_OBJ_FLAG_HIDDEN);
+    }
+    else if (!lv_obj_has_flag(s_badge, LV_OBJ_FLAG_HIDDEN))
+    {
+        lv_obj_add_flag(s_badge, LV_OBJ_FLAG_HIDDEN);
+    }
+}
 
 static void poll(lv_timer_t *t)
 {
@@ -500,6 +641,7 @@ static void poll(lv_timer_t *t)
             lv_image_header_cache_drop(NULL);
             build_library();
             last_state = -1;
+            start_shuffle_at_boot();        /* the card showed up late */
         }
     }
 
@@ -508,6 +650,29 @@ static void poll(lv_timer_t *t)
         s_autostart = false;
         s_current = s_shown;
         player_play_album(&s_albums[s_shown], 0);
+    }
+
+    update_battery();
+
+    int pot_step;
+    if (volume_pot_changed(PLAYER_VOLUME_MAX, &pot_step))      /* only when the pot moved: + / - keep working too */
+    {
+        player_set_volume(pot_step);
+        if (s_backlight == 255)             /* bright: turning the pot keeps the screen on; a dimmed one stays dim */
+            lv_display_trigger_activity(NULL);
+    }
+
+    /* save the battery: dim the backlight when nobody touched the screen for a while */
+    int dim_s = settings_dim_timeout_s();       /* seconds and level are set on the web page */
+    uint32_t idle = lv_display_get_inactive_time(NULL);
+    bool dim = dim_s > 0 && idle > (uint32_t)dim_s * 1000;
+    int want = dim ? settings_dim_level() : 255;
+    if (s_shutting_down && idle > BATT_EMPTY_SCREEN_OFF_MS)     /* battery empty: screen dark unless touched */
+        want = 0;
+    if (want != s_backlight)
+    {
+        s_backlight = want;
+        board_backlight_set((uint8_t)want);
     }
 
     int state = s_ev_state, track = s_ev_track, volume = s_ev_volume;
@@ -560,30 +725,18 @@ static void poll(lv_timer_t *t)
 
     lv_label_set_text(s_play_label, state == PLAYER_PLAYING ? LV_SYMBOL_PAUSE : LV_SYMBOL_PLAY);
 
-    if (!s_card)
+    refresh_card();
+}
+
+/* Power-up default: shuffle over all albums is on and the music starts by itself. */
+static void start_shuffle_at_boot(void)
+{
+    if (!s_n_albums || s_ev_state != PLAYER_STOPPED)
         return;
-    bool active = state != PLAYER_STOPPED && s_shown == s_current;
-    lv_obj_set_style_border_width(s_card, active ? 8 : 0, 0);
-    if (active && track >= 0 && (size_t)track < s_albums[s_shown].n_tracks)
-    {
-        char name[128];
-        song_title(s_albums[s_shown].tracks[track], name, sizeof(name));
-        lv_label_set_text(s_title, name);
-    }
-    else
-    {
-        lv_label_set_text(s_title, s_albums[s_shown].title);
-    }
-    if (active)
-    {
-        lv_label_set_text_fmt(s_badge, "%s %d/%u", state == PLAYER_PLAYING ? LV_SYMBOL_PLAY : LV_SYMBOL_PAUSE,
-                              track + 1, (unsigned)s_albums[s_shown].n_tracks);
-        lv_obj_remove_flag(s_badge, LV_OBJ_FLAG_HIDDEN);
-    }
-    else
-    {
-        lv_obj_add_flag(s_badge, LV_OBJ_FLAG_HIDDEN);
-    }
+    s_shuffle_on = true;
+    player_set_shuffle(true);
+    update_shuffle_button();
+    start_shown_if_stopped();
 }
 
 void ui_create(const library_album_t *albums, size_t n_albums)
@@ -598,6 +751,7 @@ void ui_create(const library_album_t *albums, size_t n_albums)
     create_controls(scr);
     create_header(scr);
     build_library();
+    start_shuffle_at_boot();
 
     lv_indev_t *indev = lv_indev_get_next(NULL);
     if (indev)

@@ -9,13 +9,16 @@
 #include "sd_card.h"
 #include "library.h"
 #include "player.h"
+#include "settings.h"
 #include "ui.h"
+#include "volume_pot.h"
 
 static const char *TAG = "musicplayer";
 
 void app_main(void)
 {
     ESP_LOGI(TAG, "app_main: free heap %u", (unsigned)esp_get_free_heap_size());
+    settings_init();
     board_backlight_init();
 
     lv_display_t *disp = board_lcd_init();
@@ -25,6 +28,7 @@ void app_main(void)
 
     i2c_master_bus_handle_t i2c_master = board_i2c_master();
     board_touch_init(i2c_master);
+    volume_pot_init(i2c_master);        /* optional: potentiometer on an ADS1115 */
 
     size_t n_albums = 0;
     const library_album_t *albums = NULL;

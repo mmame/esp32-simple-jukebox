@@ -19,6 +19,8 @@
 #include "freertos/task.h"
 
 #include "sd_card.h"
+#include "settings.h"
+#include "volume_pot.h"
 #include "web_server.h"
 
 static const char *TAG = "web_server";
@@ -498,6 +500,45 @@ static esp_err_t api_ota(httpd_req_t *req)
     return ESP_FAIL;
 }
 
+/* Battery state for the page: {"present":false} or voltage (smoothed, instantaneous), ADC input voltage and percent. */
+static esp_err_t api_battery(httpd_req_t *req)
+{
+    char json[200];
+    int percent;
+    float volts, now;
+    bool external;
+    httpd_resp_set_type(req, "application/json");
+    if (battery_read(&percent, &volts, &external) && battery_read_instant(&now))
+        snprintf(json, sizeof(json),
+                 "{\"present\":true,\"percent\":%d,\"volts\":%.3f,\"instant\":%.3f,\"adc\":%.3f,\"external\":%s}",
+                 percent, volts, now, now / 2.0f, external ? "true" : "false");
+    else
+        snprintf(json, sizeof(json), "{\"present\":false}");
+    return httpd_resp_sendstr(req, json);
+}
+
+static esp_err_t api_settings_get(httpd_req_t *req)
+{
+    char json[160];
+    snprintf(json, sizeof(json),
+             "{\"dim_s\":%d,\"dim_level\":%d,\"dim_level_min\":%d,\"dim_level_max\":%d,\"dim_s_max\":%d}",
+             settings_dim_timeout_s(), settings_dim_level(), SETTINGS_DIM_LEVEL_MIN, SETTINGS_DIM_LEVEL_MAX,
+             SETTINGS_DIM_S_MAX);
+    httpd_resp_set_type(req, "application/json");
+    return httpd_resp_sendstr(req, json);
+}
+
+/* POST /api/settings?dim_s=90&dim_level=190 (values are clamped to their ranges) */
+static esp_err_t api_settings_set(httpd_req_t *req)
+{
+    char a[16], b[16];
+    if (!get_param(req, "dim_s", a, sizeof(a)) || !get_param(req, "dim_level", b, sizeof(b)))
+        return bad_request(req, "dim_s and dim_level are required");
+    if (settings_set_dim(atoi(a), atoi(b)) != ESP_OK)
+        return httpd_resp_send_500(req);
+    return api_settings_get(req);
+}
+
 static esp_err_t api_done(httpd_req_t *req)
 {
     if (s_on_done)
@@ -516,7 +557,7 @@ esp_err_t web_server_start(void (*on_done)(void))
     httpd_config_t cfg = HTTPD_DEFAULT_CONFIG();
     cfg.stack_size = 8192;
     cfg.core_id = 1;        // core 0 is busy with the display refill interrupt
-    cfg.max_uri_handlers = 12;
+    cfg.max_uri_handlers = 16;
     cfg.max_open_sockets = 5;
     cfg.recv_wait_timeout = 20;
     cfg.send_wait_timeout = 20;
@@ -535,6 +576,9 @@ esp_err_t web_server_start(void (*on_done)(void))
         { .uri = "/api/album",     .method = HTTP_DELETE, .handler = api_album_delete },
         { .uri = "/api/rename",    .method = HTTP_POST,   .handler = api_album_rename },
         { .uri = "/api/ota",       .method = HTTP_POST,   .handler = api_ota },
+        { .uri = "/api/battery",   .method = HTTP_GET,    .handler = api_battery },
+        { .uri = "/api/settings",  .method = HTTP_GET,    .handler = api_settings_get },
+        { .uri = "/api/settings",  .method = HTTP_POST,   .handler = api_settings_set },
         { .uri = "/api/done",      .method = HTTP_POST,   .handler = api_done },
     };
     for (size_t i = 0; i < sizeof(uris) / sizeof(uris[0]); i++)

@@ -40,6 +40,8 @@ void player_next(void);
 void player_prev(void);
 void player_volume_up(void);
 void player_volume_down(void);
+/** Sets the volume directly, 0..PLAYER_VOLUME_MAX (volume pot). */
+void player_set_volume(int level);
 int player_volume(void);
 /** Stops and forgets the album; blocks until done. Call before library_scan(), which frees the album. */
 void player_reset(void);

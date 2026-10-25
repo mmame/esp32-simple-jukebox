@@ -9,23 +9,32 @@ and only a few large buttons. Music is added from a phone or laptop through a bu
 
 ```
 +--------------------------------------------------------------+
-|                                                    [ WiFi ]  |
+| [battery 78%]                                      [ WiFi ]  |
 |   [ <- ]        +--------------------+          [ -> ]       |
 |                 |                    |                       |
-|                 |   album cover      |        (speaker) ===  |
+|                 |   album cover      |                       |
 |                 |   360 x 360        |                       |
-|                 |  [ album title ]   |                       |
+|   [shuffle]     |  [ song / album ]  |        (speaker) ===  |
 |                 +--------------------+                       |
 |  [|<]  [ Play/Pause ]  [>|]  [Stop]   [ - ]  [ + ]           |
 +--------------------------------------------------------------+
 ```
 
-* **Tap the cover** to play the album from its first track. A frame and a badge ("track 3/12") mark the playing album.
-* **Arrows left/right** change the album on screen. If music was playing it stops at once; if the arrows
-  are not touched for 3 seconds, the album now on screen starts by itself.
-* **Play / Prev / Next** start the album on screen when nothing is playing; otherwise they pause/resume and skip tracks.
-* **Stop** stops playback. **- / +** change the volume (0..20, the bar above the buttons shows it, startup volume is 5).
+The battery symbol only appears with the optional ADS1115 and a battery, the volume buttons `- / +` are only there without a
+volume pot, see "Optional hardware" below.
+
+* **Shuffle is on at power-up and the music starts by itself:** all tracks of all albums in random order (every track once, then
+  reshuffled). The screen follows the music, the album arrows are hidden. Switching shuffle on while nothing plays starts it.
+* **Tap the cover** of the playing album to pause, tap again to resume. Tapping another album starts it from its first track.
+  A frame and a badge ("track 3/12") mark the playing album; the title on the cover shows the **song name** while it plays.
+* **Shuffle button** (bottom left): tap to switch to album mode and back. In album mode the **arrows left/right** change the album
+  on screen. If music was playing it stops at once; if the arrows are not touched for 3 seconds, the album now on screen starts by itself.
+* **Play / Prev / Next** start the album on screen (or shuffle) when nothing is playing; otherwise they pause/resume and skip tracks.
+  At the end of an album the next one starts, after the last one the first (endless play).
+* **Stop** stops playback. **- / +** change the volume (0..20, the bar next to the cover shows it, startup volume 5). Even the
+  lowest step is quietly audible, and stereo is mixed down to mono (one speaker); both are constants in `main/player.c`.
 * **WiFi button** (top right) is for adding music, see below.
+* **Display dimming:** after 90 s without touching the screen the backlight dims (timeout and brightness: web page, "Display").
 
 ## Adding music
 
@@ -48,6 +57,10 @@ The page is embedded in the firmware (`main/web/index.html`, no internet needed)
   decoded by the browser and encoded to 160 kbps MP3 with the bundled lamejs (`main/web/lame.min.js`, LGPL-3.0).
 * Songs are stored as `NN_name.mp3` so the play order matches the order in the page. Use an existing album name to append songs.
 * Per album: **Rename**, **Change cover**, **Add songs**, **Delete album**; single songs can be deleted too.
+* **Display:** timeout until the backlight dims (seconds, 0 = never, default 90) and the dimmed brightness (130..255, default 190);
+  stored in flash (NVS) and kept over restarts. API: `GET /api/settings`, `POST /api/settings?dim_s=..&dim_level=..`.
+* **Battery:** with the optional ADC the page shows percent, smoothed and instantaneous voltage and the voltage at the ADC input
+  (refreshed every 3 s, `GET /api/battery`), which helps to check the divider and the discharge curve.
 * **Firmware update:** the page installs the `-ota.bin` image. An image that is not an app image of this project
   (for example the full image) is rejected.
 
@@ -70,6 +83,76 @@ otherwise); `--quiet` turns it off.
   `GET /api/albums` lists everything, `POST /api/done` leaves upload mode. No login: the WPA2 password protects the access point.
 
 REST API: see `main/web_server.h`. Uploads go to a `.part` file first, so an aborted upload leaves nothing broken behind.
+
+## Hardware
+
+### Minimal build (USB powered)
+
+* **Sunton ESP32-8048S050C** (ESP32-S3, 16 MB flash, 8 MB octal PSRAM, 5" 800x480 RGB panel, GT911 touch, SD slot).
+* **Speaker** on the board's speaker connector. One channel is enough: stereo is mixed down to mono.
+* **microSD card**, FAT32, in the board's slot (any size, see "SD card layout").
+* **5 V supply** on USB-C (or the 5 V header). Nothing else is needed.
+
+### Portable build (battery)
+
+```
+ 18650 cells        BMS / charger            5 V step-up            Sunton board
+ (1S3P)  --B+/B--> [ 03962A module ] --OUT--> [ MT3608 ] --5 V-->  USB-C / 5 V pin
+                      |  USB-C charging         (set to 5.0 V
+                      '- under-voltage cut-off   BEFORE connecting)
+```
+
+* **Cells:** one cell in series, parallel cells for capacity (the author uses 3 x 18650 = 1S3P). Matching, equally charged cells.
+* **BMS: mandatory.** It must charge the cell safely (CC/CV to 4.2 V), cut off on **under-voltage** and on over-current/short circuit.
+  The firmware only warns and stops the music when the battery is empty, it cannot switch the board off (the board draws about
+  0.3 W even then). The author uses a **03962A** module, which handles all of that cleanly; any comparable charger +
+  protection module works (for example TP4056 with DW01 + 8205 protection, make sure it has the protection part).
+* **Step-up converter:** the cell delivers 3.0-4.2 V, the board wants 5 V. Use a boost converter such as the **MT3608**
+  (adjustable; turn the trimmer to **5.0 V with a multimeter before connecting the board**, its default output can be far higher),
+  or a boost stage that is already part of the charger module. Efficiency is typically 85-90 %, so the battery supplies a bit more than
+  the board's power below. A larger output capacitor (e.g. 100-470 µF) close to the board helps with the current spikes of Wi-Fi.
+* **Switch:** a slide switch in the battery lead between BMS and converter is a cheap way to switch the player off completely.
+
+### Options
+
+| Option | What you get | Needs |
+| --- | --- | --- |
+| Volume pot | analog volume knob, `- / +` buttons hidden | ADS1115 + 10 kΩ linear pot |
+| Battery gauge | symbol and percent top left, low-battery warning | ADS1115 + 1:1 divider (2 x 100 kΩ) on the cell |
+| Both | knob and gauge | one ADS1115 (AIN0 pot, AIN1 battery) |
+| neither | touch volume buttons, no battery icon | nothing |
+
+### ADS1115 wiring (volume pot and battery)
+
+An ADS1115 on the touch I2C bus (SDA GPIO 19, SCL GPIO 20, address `0x48`, ADDR to GND) adds a volume knob and a battery gauge.
+It is detected at power-up; without it everything works with the touch buttons and no battery icon.
+
+| ADS1115 | Connect |
+| --- | --- |
+| VDD / GND | 3.3 V / GND (common ground with the board and the battery) |
+| AIN0 | wiper of a 10 kΩ linear potentiometer, ends on 3.3 V and GND |
+| AIN1 | battery through a 1:1 divider (e.g. 2 x 100 kΩ), so VBat = 2 x measured; 100 nF to GND at AIN1 helps |
+
+* **Volume pot:** read 10 times a second, smoothed with hysteresis, 0..20 steps. With a pot the `- / +` buttons are hidden and the
+  other buttons move together in the middle. Turning the pot keeps a bright screen on but does not wake a dimmed one.
+* **Battery** (designed for one Li-ion cell, 1S, e.g. 1S3P 18650): symbol and percentage top left (white / amber below 30 % / red below 15 %).
+  The percentage comes from a typical 18650 discharge curve on the smoothed voltage (`k_curve` in `main/volume_pot.c`; under load
+  the voltage sags, so the value reads a little low while music plays). Below 10 % a red "Battery low" banner appears. At 3 % for 20 s
+  the player stops, shows "Battery empty - please charge" and switches the backlight off 10 s after the last touch (a touch shows
+  the message again). It does **not** power anything down: the board still draws about 0.3 W, so a **BMS with under-voltage
+  cut-off is mandatory**, see "Hardware".
+  Below 2.5 V at the pin (no battery) the icon, warning and shutdown are disabled; above 4.6 V (external supply) a charge symbol is shown.
+
+## Power consumption
+
+Measured while playing music: about **1.5 W at full brightness** and about **0.65 W with the dimmed backlight**
+(the backlight is the biggest consumer, which is why the screen dims after 90 s). As a rough example, 3 x 2500 mAh 18650 cells
+(about 28 Wh) would last on the order of 15 hours at full brightness and 35 hours or more dimmed, less in practice because of
+converter losses and the voltage cut-off.
+
+**After "battery empty" the board still draws about 0.3 W** (measured, music stopped and backlight off): regulators, USB serial chip,
+amplifier and panel electronics stay powered and the firmware cannot switch them off. That is roughly 80 mA from a 3.7 V cell, so the
+firmware is no protection for the battery: a **BMS with under-voltage cut-off is mandatory**.
 
 ## SD card layout
 
@@ -109,7 +192,7 @@ ota_1 0x620000 (6 MB); about 3.9 MB stay free. Changing this layout later needs 
 | --- | --- |
 | SD CS / MOSI / SCLK / MISO | 10 / 11 / 12 / 13 |
 | I2S BCLK / LRC / DOUT | 0 / 18 / 17 |
-| Touch SDA / SCL / RST | 19 / 20 / 38 |
+| Touch SDA / SCL / RST (same I2C bus for the ADS1115) | 19 / 20 / 38 |
 | Backlight | 2 |
 
 The SD and I2S pins are the GPIOs left free by the RGB panel, taken from the Elecrow 5" ESP32-S3 wiki. The touch range is read
@@ -140,10 +223,13 @@ flash and PSRAM at 120 MHz (does not boot on this unit, its flash is reported as
 * `player.c` decode task (priority 5, core 1): play/pause, stop, next, prev, volume; calls are non-blocking
 * `ui.c` one-album screen, arrows, control bar; the player task never takes the LVGL lock, the UI polls a state snapshot every 100 ms
 * `wifi_ap.c`, `web_server.c`, `upload_mode.c`, `web/` upload mode (access point, REST API, web page)
+* `volume_pot.c` ADS1115 reader task (pot on AIN0, battery on AIN1, discharge curve); `settings.c` dimming settings in NVS
 
 ## Status
 
 Tested on hardware: display, touch, SD library, playback, web upload, album edit, glitch-free display with the bounce buffer.
+Written but not yet tested with the real parts: the ADS1115 volume pot and battery gauge (percent curve, low-battery warning and
+deep-sleep shutdown), the display dimming levels, the Wi-Fi stability changes (20 MHz channel).
 Not yet verified: the OTA update flow, the 4.3" variant, SD pins on other board revisions. App rollback is not enabled.
 
 ## License

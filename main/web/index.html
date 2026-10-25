@@ -82,8 +82,19 @@
   </section>
 
   <section>
+    <h2>Display</h2>
+    <label for="dim-s">Dim the screen after (seconds without touch, 0 = never dim)</label>
+    <input id="dim-s" type="number" min="0" max="3600" step="5" style="width:8em">
+    <label for="dim-level">Brightness when dimmed: <span id="dim-level-val"></span></label>
+    <input id="dim-level" type="range" min="130" max="255" step="5" style="width:100%">
+    <div class="hint">255 is full brightness. The dimmed level takes effect on the screen as soon as you save and the timeout has passed.</div>
+    <p><button id="dim-save">Save</button> <span id="dim-status" class="hint"></span></p>
+  </section>
+
+  <section>
     <h2>Firmware update</h2>
     <div class="hint" id="version"></div>
+    <div class="hint" id="battery"></div>
     <p><input id="fw" type="file" accept=".bin"></p>
     <button id="fw-go">Install update</button>
     <div class="hint">Use the file ending in <code>-ota.bin</code>. The player restarts afterwards.</div>
@@ -396,6 +407,44 @@ $("done").onclick = async () => {
   document.body.replaceChildren(el("main", {}, el("h1", { textContent: "All done" }),
     el("p", { textContent: "The player is back in normal mode. You can close this page." })));
 };
+
+// display dimming: timeout and brightness, stored on the player
+async function loadSettings() {
+  try {
+    const s = await (await fetch("/api/settings")).json();
+    $("dim-s").value = s.dim_s;
+    $("dim-s").max = s.dim_s_max;
+    $("dim-level").min = s.dim_level_min;
+    $("dim-level").max = s.dim_level_max;
+    $("dim-level").value = s.dim_level;
+    $("dim-level-val").textContent = s.dim_level;
+  } catch (e) { $("dim-status").textContent = "Cannot read the settings."; }
+}
+$("dim-level").oninput = () => { $("dim-level-val").textContent = $("dim-level").value; };
+$("dim-save").onclick = async () => {
+  try {
+    const r = await fetch(`/api/settings?dim_s=${encodeURIComponent($("dim-s").value || 0)}&dim_level=${$("dim-level").value}`, { method: "POST" });
+    if (!r.ok) throw new Error(await r.text());
+    const s = await r.json();
+    $("dim-s").value = s.dim_s;
+    $("dim-level").value = s.dim_level;
+    $("dim-level-val").textContent = s.dim_level;
+    $("dim-status").textContent = "Saved.";
+  } catch (e) { $("dim-status").textContent = "Failed: " + e.message; }
+};
+loadSettings();
+
+// battery (only with the ADS1115): percent, smoothed and instantaneous voltage, voltage at the ADC input
+async function pollBattery() {
+  try {
+    const b = await (await fetch("/api/battery")).json();
+    $("battery").textContent = b.present
+      ? `Battery: ${b.percent} %, ${b.volts.toFixed(3)} V (smoothed), ${b.instant.toFixed(3)} V now, ADC input ${b.adc.toFixed(3)} V` + (b.external ? " (external supply)" : "")
+      : "";
+  } catch (e) { /* the player may be busy or gone */ }
+}
+setInterval(pollBattery, 3000);
+pollBattery();
 
 window.addEventListener("beforeunload", e => { if (busy) { e.preventDefault(); e.returnValue = ""; } });
 refresh().catch(e => setStatus("Cannot reach the player: " + e.message, "err"));

@@ -78,6 +78,12 @@ static esp_lcd_panel_handle_t s_panel = NULL;
  * picture shifts sideways. The panel just refreshes slower for that time. */
 #define SUNTON_ESP32_PCLK_LOW_BANDWIDTH_HZ      (12 * 1000000)
 
+void board_backlight_set(uint8_t duty)
+{
+    ledc_set_duty(LEDC_LOW_SPEED_MODE, SUNTON_ESP32_BACKLIGHT_LEDC_CHANNEL, duty);
+    ledc_update_duty(LEDC_LOW_SPEED_MODE, SUNTON_ESP32_BACKLIGHT_LEDC_CHANNEL);
+}
+
 void board_backlight_init(void)
 {
     ledc_timer_config_t ledc_timer = {
