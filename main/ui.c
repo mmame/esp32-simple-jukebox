@@ -518,8 +518,27 @@ static void update_battery(void)
     float volts;
     bool external;
     static uint32_t low_since;
+    static int last_state = -1, last_volume = -1, last_backlight = -1;
+
+    /* playback, volume and backlight change the load, and with it the voltage: the charge detection must know */
+    if (s_ev_state != last_state || s_ev_volume != last_volume || s_backlight != last_backlight)
+    {
+        last_state = s_ev_state;
+        last_volume = s_ev_volume;
+        last_backlight = s_backlight;
+        battery_load_changed();
+    }
+
+    const bool charging = battery_charging();
     if (s_shutting_down)
-        return;
+    {
+        if (!charging)
+            return;
+        /* a charger was connected: back to normal */
+        s_shutting_down = false;
+        lv_obj_add_flag(s_batt_warn, LV_OBJ_FLAG_HIDDEN);
+        lv_display_trigger_activity(NULL);
+    }
     if (!battery_read(&percent, &volts, &external))
     {
         if (!lv_obj_has_flag(s_battery, LV_OBJ_FLAG_HIDDEN))
@@ -531,12 +550,12 @@ static void update_battery(void)
     }
 
     bool warn_shown = !lv_obj_has_flag(s_batt_warn, LV_OBJ_FLAG_HIDDEN);
-    if (!external && percent <= BATT_WARN_PERCENT && !warn_shown)
+    if (!external && !charging && percent <= BATT_WARN_PERCENT && !warn_shown)
         lv_obj_remove_flag(s_batt_warn, LV_OBJ_FLAG_HIDDEN);
-    else if ((external || percent > BATT_WARN_PERCENT + 3) && warn_shown)
+    else if ((external || charging || percent > BATT_WARN_PERCENT + 3) && warn_shown)
         lv_obj_add_flag(s_batt_warn, LV_OBJ_FLAG_HIDDEN);
 
-    if (!external && percent <= BATT_SHUTDOWN_PERCENT)
+    if (!external && !charging && percent <= BATT_SHUTDOWN_PERCENT)
     {
         if (!low_since)
             low_since = lv_tick_get() | 1;
@@ -556,12 +575,14 @@ static void update_battery(void)
     char text[24];
     if (external)
         snprintf(text, sizeof(text), "%s", symbol);
+    else if (charging)      /* the percentage reads too high while charging: no number */
+        snprintf(text, sizeof(text), LV_SYMBOL_CHARGE " %s", symbol);
     else
         snprintf(text, sizeof(text), "%s %d%%", symbol, percent);
     if (strcmp(lv_label_get_text(s_battery), text) != 0)
         lv_label_set_text(s_battery, text);
 
-    lv_color_t color = external || percent >= 30 ? lv_color_white()
+    lv_color_t color = external || charging || percent >= 30 ? lv_color_white()
                      : percent >= 15 ? lv_color_hex(COL_ACCENT) : lv_color_hex(COL_RED);
     if (!lv_color_eq(lv_obj_get_style_text_color(s_battery, LV_PART_MAIN), color))
         lv_obj_set_style_text_color(s_battery, color, 0);

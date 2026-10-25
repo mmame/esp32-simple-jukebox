@@ -11,6 +11,8 @@ static const char *TAG = "settings";
 static volatile int s_dim_s = SETTINGS_DIM_S_DEFAULT;
 static volatile int s_dim_level = SETTINGS_DIM_LEVEL_DEFAULT;
 
+static volatile int s_batt_cal = SETTINGS_BATT_CAL_DEFAULT;
+
 static int clamp(int v, int lo, int hi)
 {
     return v < lo ? lo : (v > hi ? hi : v);
@@ -37,8 +39,31 @@ void settings_init(void)
         s_dim_s = clamp(v, 0, SETTINGS_DIM_S_MAX);
     if (nvs_get_i32(h, "dim_level", &v) == ESP_OK)
         s_dim_level = clamp(v, SETTINGS_DIM_LEVEL_MIN, SETTINGS_DIM_LEVEL_MAX);
+    if (nvs_get_i32(h, "batt_cal", &v) == ESP_OK)
+        s_batt_cal = clamp(v, SETTINGS_BATT_CAL_MIN, SETTINGS_BATT_CAL_MAX);
     nvs_close(h);
-    ESP_LOGI(TAG, "dim after %d s, dimmed level %d", s_dim_s, s_dim_level);
+    ESP_LOGI(TAG, "dim after %d s, dimmed level %d, battery calibration %d", s_dim_s, s_dim_level, s_batt_cal);
+}
+
+int settings_batt_cal(void)
+{
+    return s_batt_cal;
+}
+
+esp_err_t settings_set_batt_cal(int cal)
+{
+    cal = clamp(cal, SETTINGS_BATT_CAL_MIN, SETTINGS_BATT_CAL_MAX);
+    s_batt_cal = cal;
+
+    nvs_handle_t h;
+    esp_err_t ret = nvs_open(NAMESPACE, NVS_READWRITE, &h);
+    if (ret != ESP_OK)
+        return ret;
+    ret = nvs_set_i32(h, "batt_cal", cal);
+    if (ret == ESP_OK)
+        ret = nvs_commit(h);
+    nvs_close(h);
+    return ret;
 }
 
 int settings_dim_timeout_s(void)

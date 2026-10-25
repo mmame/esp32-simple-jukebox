@@ -95,6 +95,11 @@
     <h2>Firmware update</h2>
     <div class="hint" id="version"></div>
     <div class="hint" id="battery"></div>
+    <div class="hint" id="calibrate" hidden>
+      Calibrate the battery voltage: measure the battery with a multimeter and enter it here
+      <input id="cal-volts" type="number" min="2.5" max="4.5" step="0.001" placeholder="3.912" style="width:6em"> V
+      <button id="cal-go">Set</button> <button id="cal-reset">Reset</button> <span id="cal-status"></span>
+    </div>
     <p><input id="fw" type="file" accept=".bin"></p>
     <button id="fw-go">Install update</button>
     <div class="hint">Use the file ending in <code>-ota.bin</code>. The player restarts afterwards.</div>
@@ -439,10 +444,21 @@ async function pollBattery() {
   try {
     const b = await (await fetch("/api/battery")).json();
     $("battery").textContent = b.present
-      ? `Battery: ${b.percent} %, ${b.volts.toFixed(3)} V (smoothed), ${b.instant.toFixed(3)} V now, ADC input ${b.adc.toFixed(3)} V` + (b.external ? " (external supply)" : "")
+      ? `Battery: ${b.charging ? "charging (" + b.percent + " % is too high while charging)" : b.percent + " %"}, ${b.volts.toFixed(3)} V (smoothed), ${b.instant.toFixed(3)} V now, ADC input ${b.adc.toFixed(3)} V` + (b.external ? " (external supply)" : "")
       : "";
+    $("calibrate").hidden = !b.present;
+    if (b.present) $("cal-status").textContent = `(correction x${b.cal.toFixed(4)})`;
   } catch (e) { /* the player may be busy or gone */ }
 }
+async function calibrate(volts) {
+  try {
+    const r = await fetch(`/api/battery?volts=${volts}`, { method: "POST" });
+    if (!r.ok) throw new Error(await r.text());
+    await pollBattery();
+  } catch (e) { $("cal-status").textContent = "Failed: " + e.message; }
+}
+$("cal-go").onclick = () => { if ($("cal-volts").value) calibrate($("cal-volts").value); };
+$("cal-reset").onclick = () => calibrate(0);
 setInterval(pollBattery, 3000);
 pollBattery();
 

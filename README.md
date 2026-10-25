@@ -142,6 +142,12 @@ It is detected at power-up; without it everything works with the touch buttons a
   the message again). It does **not** power anything down: the board still draws about 0.3 W, so a **BMS with under-voltage
   cut-off is mandatory**, see "Hardware".
   Below 2.5 V at the pin (no battery) the icon, warning and shutdown are disabled; above 4.6 V (external supply) a charge symbol is shown.
+  **Charging** is guessed from the voltage trend (a charger lifts the voltage by tens of mV, a jump of more than 50 mV counts at once,
+  a slower rise of 40 mV within 2 minutes too; the same the other way round when it is unplugged). While charging, a bolt replaces the
+  percentage (it would read too high), the low-battery warning is off and an "empty" player wakes up. A battery that is already full
+  shows no trend and is not detected as charging.
+  **Calibration:** divider tolerance and the ADS1115 input load can make the voltage read about 1 % off. Measure the battery with a
+  multimeter and enter the value on the web page (below the firmware version); the correction (max. +-10 %) is stored in flash.
 
 ## Power consumption
 
@@ -223,7 +229,7 @@ flash and PSRAM at 120 MHz (does not boot on this unit, its flash is reported as
 * `player.c` decode task (priority 5, core 1): play/pause, stop, next, prev, volume; calls are non-blocking
 * `ui.c` one-album screen, arrows, control bar; the player task never takes the LVGL lock, the UI polls a state snapshot every 100 ms
 * `wifi_ap.c`, `web_server.c`, `upload_mode.c`, `web/` upload mode (access point, REST API, web page)
-* `volume_pot.c` ADS1115 reader task (pot on AIN0, battery on AIN1, discharge curve); `settings.c` dimming settings in NVS
+* `volume_pot.c` ADS1115 reader task (pot on AIN0, battery on AIN1, discharge curve, charge detection); `settings.c` dimming and battery calibration in NVS
 
 ## Status
 

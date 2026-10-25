@@ -503,18 +503,47 @@ static esp_err_t api_ota(httpd_req_t *req)
 /* Battery state for the page: {"present":false} or voltage (smoothed, instantaneous), ADC input voltage and percent. */
 static esp_err_t api_battery(httpd_req_t *req)
 {
-    char json[200];
+    char json[220];
     int percent;
     float volts, now;
     bool external;
     httpd_resp_set_type(req, "application/json");
     if (battery_read(&percent, &volts, &external) && battery_read_instant(&now))
         snprintf(json, sizeof(json),
-                 "{\"present\":true,\"percent\":%d,\"volts\":%.3f,\"instant\":%.3f,\"adc\":%.3f,\"external\":%s}",
-                 percent, volts, now, now / 2.0f, external ? "true" : "false");
+                 "{\"present\":true,\"percent\":%d,\"volts\":%.3f,\"instant\":%.3f,\"adc\":%.3f,\"external\":%s,"
+                 "\"charging\":%s,\"cal\":%.4f}",
+                 percent, volts, now, now / 2.0f, external ? "true" : "false", battery_charging() ? "true" : "false",
+                 settings_batt_cal() / 10000.0f);
     else
         snprintf(json, sizeof(json), "{\"present\":false}");
     return httpd_resp_sendstr(req, json);
+}
+
+/* POST /api/battery?volts=3.912  The battery voltage measured with a multimeter: the correction is set so that the
+ * player shows this value. volts=0 resets the correction. Answers like GET /api/battery. */
+static esp_err_t api_battery_calibrate(httpd_req_t *req)
+{
+    char v[16];
+    int percent;
+    float shown;
+    bool external;
+    if (!get_param(req, "volts", v, sizeof(v)))
+        return bad_request(req, "volts is required");
+    float measured = strtof(v, NULL);
+    if (measured <= 0)
+    {
+        settings_set_batt_cal(SETTINGS_BATT_CAL_DEFAULT);
+    }
+    else
+    {
+        if (!battery_read(&percent, &shown, &external))
+            return bad_request(req, "no battery voltage to calibrate");
+        float cal = settings_batt_cal() * measured / shown;
+        if (cal < SETTINGS_BATT_CAL_MIN || cal > SETTINGS_BATT_CAL_MAX)
+            return bad_request(req, "the difference is too big for a calibration (more than 10 %)");
+        settings_set_batt_cal((int)(cal + 0.5f));
+    }
+    return api_battery(req);
 }
 
 static esp_err_t api_settings_get(httpd_req_t *req)
@@ -577,7 +606,8 @@ esp_err_t web_server_start(void (*on_done)(void))
         { .uri = "/api/rename",    .method = HTTP_POST,   .handler = api_album_rename },
         { .uri = "/api/ota",       .method = HTTP_POST,   .handler = api_ota },
         { .uri = "/api/battery",   .method = HTTP_GET,    .handler = api_battery },
-        { .uri = "/api/settings",  .method = HTTP_GET,    .handler = api_settings_get },
+        { .uri = "/api/battery",   .method = HTTP_POST,   .handler = api_battery_calibrate },
+        { .uri = "/api/settings",  .method = HTTP_GET,   .handler = api_settings_get },
         { .uri = "/api/settings",  .method = HTTP_POST,   .handler = api_settings_set },
         { .uri = "/api/done",      .method = HTTP_POST,   .handler = api_done },
     };
