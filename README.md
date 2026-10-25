@@ -196,7 +196,7 @@ ota_1 0x620000 (6 MB); about 3.9 MB stay free. Changing this layout later needs 
 | Backlight | 2 |
 
 The SD and I2S pins are the GPIOs left free by the RGB panel, taken from the Elecrow 5" ESP32-S3 wiki. The touch range is read
-from the GT911 at startup, so the 4.3" ESP32-8048S043 should work too (untested).
+from the GT911 at startup.
 
 ## Display notes (hard-won)
 
@@ -227,10 +227,9 @@ flash and PSRAM at 120 MHz (does not boot on this unit, its flash is reported as
 
 ## Status
 
-Tested on hardware: display, touch, SD library, playback, web upload, album edit, glitch-free display with the bounce buffer.
-Written but not yet tested with the real parts: the ADS1115 volume pot and battery gauge (percent curve, low-battery warning and
-deep-sleep shutdown), the display dimming levels, the Wi-Fi stability changes (20 MHz channel).
-Not yet verified: the OTA update flow, the 4.3" variant, SD pins on other board revisions. App rollback is not enabled.
+Tested on hardware: display, touch, SD library, playback, shuffle, web upload, album edit, OTA update, glitch-free display with the
+bounce buffer, ADS1115 volume pot, battery gauge and display dimming.
+Not yet verified: the Wi-Fi stability changes (20 MHz channel), SD pins on other board revisions. App rollback is not enabled.
 
 ## License
 
