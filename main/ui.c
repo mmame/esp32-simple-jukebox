@@ -518,16 +518,6 @@ static void update_battery(void)
     float volts;
     bool external;
     static uint32_t low_since;
-    static int last_state = -1, last_volume = -1, last_backlight = -1;
-
-    /* playback, volume and backlight change the load, and with it the voltage: the charge detection must know */
-    if (s_ev_state != last_state || s_ev_volume != last_volume || s_backlight != last_backlight)
-    {
-        last_state = s_ev_state;
-        last_volume = s_ev_volume;
-        last_backlight = s_backlight;
-        battery_load_changed();
-    }
 
     const bool charging = battery_charging();
     if (s_shutting_down)
@@ -694,6 +684,7 @@ static void poll(lv_timer_t *t)
     {
         s_backlight = want;
         board_backlight_set((uint8_t)want);
+        battery_backlight_changed();
     }
 
     int state = s_ev_state, track = s_ev_track, volume = s_ev_volume;

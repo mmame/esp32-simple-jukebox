@@ -33,12 +33,13 @@ bool volume_pot_changed(int max, int *step);
 bool battery_read(int *percent, float *volts, bool *external);
 
 /**
- * True while the voltage trend says a charger is connected (a guess: needs a minute, and a battery that is already full
- * shows no trend). Tell it with battery_load_changed() when the load changes (playback, backlight, volume): the voltage
- * steps then without any charger, so it waits ~40 s before it judges again.
+ * True while the voltage trend says a charger is connected (a guess: needs a minute or two, and a battery that is already
+ * full shows no trend).
  */
 bool battery_charging(void);
-void battery_load_changed(void);
+
+/** Call when the backlight brightness changes: that load step moves the voltage, which must not look like a charger. */
+void battery_backlight_changed(void);
 
 /** Unsmoothed battery voltage of the latest measurement (for diagnosis). False if there is none. */
 bool battery_read_instant(float *volts);

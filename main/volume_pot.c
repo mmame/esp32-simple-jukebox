@@ -36,22 +36,21 @@ static volatile float s_batt_volts = -1;
 static volatile float s_batt_instant = -1;
 
 /* Charging is guessed from the voltage trend: a charger lifts the terminal voltage by tens of mV at once and on, while
- * discharging it falls about 1 mV per minute. The smoothed voltage is sampled every few seconds into a window; "charging"
- * is when it is clearly above the lowest value of the window, "not charging" when it falls clearly below the highest. */
-#define CHG_SAMPLE_MS       5000
-#define CHG_WINDOW          24          /* 2 minutes */
+ * discharging it falls 1..3 mV per minute. The smoothed voltage is sampled every 10 s into a 10 minute window; "charging"
+ * is when it rose more than a limit (growing with the age of the sample) above an older one, "not charging" when it fell. */
+#define CHG_SAMPLE_MS       10000
+#define CHG_WINDOW          60          /* 10 minutes */
 #define CHG_MIN_SAMPLES     3
-#define CHG_RISE_VOLTS      0.040f
-#define CHG_FALL_VOLTS      0.030f
-#define CHG_JUMP_VOLTS      0.050f      /* a jump this big counts at once, even right after a load change */
-#define CHG_HOLDOFF_MS     40000       /* after a load change: the smoothed voltage needs this long to settle */
+#define CHG_BASE_VOLTS      0.020f      /* change that counts after a moment ... */
+#define CHG_PER_MINUTE      0.003f      /* ... plus this much for every minute between the two samples */
+#define CHG_SETTLE_MS       25000       /* after a backlight change: the smoothed voltage needs this long to settle */
 
 static volatile bool s_charging;
-static volatile uint32_t s_load_changed_at;
+static volatile uint32_t s_backlight_changed_at;
+static uint32_t s_seen_backlight_change;
 static float s_win[CHG_WINDOW];
 static int s_win_n, s_win_head;
 static TickType_t s_win_tick;
-static uint32_t s_seen_load_change;
 
 static bool s_pot_first = true;
 static float s_pot_filtered;
@@ -99,45 +98,31 @@ static void charge_detect(float v)
     if (s_win_n == 0)
         win_reset(v);
 
-    /* the load (music, backlight) changed: the voltage steps without any charger. Start over, keep the state. */
-    static TickType_t holdoff_until;
-    static bool holding;
-    if (s_load_changed_at != s_seen_load_change)
+    /* The backlight changed: that load step moves the voltage without any charger. Wait until the smoothed voltage has
+     * settled, then shift the history by the step so that a slow trend survives. */
+    static TickType_t settle_until;
+    static bool settling;
+    static float before_step;
+    if (s_backlight_changed_at != s_seen_backlight_change)
     {
-        s_seen_load_change = s_load_changed_at;
-        holdoff_until = now + pdMS_TO_TICKS(CHG_HOLDOFF_MS);
-        holding = true;
+        s_seen_backlight_change = s_backlight_changed_at;
+        settle_until = now + pdMS_TO_TICKS(CHG_SETTLE_MS);
+        if (!settling)
+            before_step = v;
+        settling = true;
     }
-    if (holding)
+    if (settling)
     {
-        if ((int32_t)(now - holdoff_until) < 0)
-        {
-            /* The voltage is still settling after a load change (the window keeps the samples from before it), but a
-             * big jump is the charger: a load change moves it by 10..20 mV, a charger by 100 mV. */
-            if (s_win_n)
-            {
-                float lo = s_win[0], hi = s_win[0];
-                for (int i = 1; i < s_win_n; i++)
-                {
-                    lo = s_win[i] < lo ? s_win[i] : lo;
-                    hi = s_win[i] > hi ? s_win[i] : hi;
-                }
-                const bool plugged = !s_charging && v - lo > CHG_JUMP_VOLTS;
-                const bool unplugged = s_charging && hi - v > CHG_JUMP_VOLTS;
-                if (plugged || unplugged)
-                {
-                    s_charging = plugged;
-                    holding = false;
-                    win_reset(v);
-                    ESP_LOGI(TAG, "charging %s (%.3f V, big jump)", plugged ? "detected" : "ended", v);
-                }
-            }
+        if ((int32_t)(now - settle_until) < 0)
             return;
-        }
-        holding = false;
-        win_reset(v);
+        settling = false;
+        const float step = v - before_step;
+        for (int i = 0; i < s_win_n; i++)
+            s_win[i] += step;
+        s_win_tick = now;
         return;
     }
+
     if (now - s_win_tick < pdMS_TO_TICKS(CHG_SAMPLE_MS))
         return;
     s_win_tick = now;
@@ -148,23 +133,21 @@ static void charge_detect(float v)
     if (s_win_n < CHG_MIN_SAMPLES)
         return;
 
-    float lo = s_win[0], hi = s_win[0];
-    for (int i = 1; i < s_win_n; i++)
+    /* Compare with every older sample: the allowed change grows with its age (a slow drift is normal, a quick one is
+     * not). Discharging moves 1..3 mV per minute, a charger 10..30 mV per minute. */
+    bool rose = false, fell = false;
+    for (int k = 1; k < s_win_n; k++)
     {
-        lo = s_win[i] < lo ? s_win[i] : lo;
-        hi = s_win[i] > hi ? s_win[i] : hi;
+        const float old = s_win[(s_win_head - 1 - k + 2 * CHG_WINDOW) % CHG_WINDOW];
+        const float limit = CHG_BASE_VOLTS + CHG_PER_MINUTE * (k * CHG_SAMPLE_MS / 60000.0f);
+        rose = rose || v - old > limit;
+        fell = fell || old - v > limit;
     }
-    if (!s_charging && v - lo > CHG_RISE_VOLTS)
+    if ((!s_charging && rose) || (s_charging && fell))
     {
-        s_charging = true;
-        win_reset(v);               /* from now on a fall is measured from here */
-        ESP_LOGI(TAG, "charging detected (%.3f V)", v);
-    }
-    else if (s_charging && hi - v > CHG_FALL_VOLTS)
-    {
-        s_charging = false;
-        win_reset(v);
-        ESP_LOGI(TAG, "charging ended (%.3f V)", v);
+        s_charging = !s_charging;
+        win_reset(v);               /* from now on a change is measured from here */
+        ESP_LOGI(TAG, "charging %s (%.3f V)", s_charging ? "detected" : "ended", v);
     }
 }
 
@@ -255,9 +238,9 @@ bool battery_charging(void)
     return s_dev != NULL && s_batt_volts >= BATT_MIN_VOLTS && s_charging;
 }
 
-void battery_load_changed(void)
+void battery_backlight_changed(void)
 {
-    s_load_changed_at++;
+    s_backlight_changed_at++;
 }
 
 /* The measurement is stored as it comes from the divider; the user's correction is applied when it is read. */

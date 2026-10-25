@@ -142,8 +142,8 @@ It is detected at power-up; without it everything works with the touch buttons a
   the message again). It does **not** power anything down: the board still draws about 0.3 W, so a **BMS with under-voltage
   cut-off is mandatory**, see "Hardware".
   Below 2.5 V at the pin (no battery) the icon, warning and shutdown are disabled; above 4.6 V (external supply) a charge symbol is shown.
-  **Charging** is guessed from the voltage trend (a charger lifts the voltage by tens of mV, a jump of more than 50 mV counts at once,
-  a slower rise of 40 mV within 2 minutes too; the same the other way round when it is unplugged). While charging, a bolt replaces the
+  **Charging** is guessed from the voltage trend (a charger lifts the voltage by tens of mV: a rise of more than 20 mV plus 3 mV per minute
+  within the last 10 minutes counts; the same the other way round when it is unplugged). While charging, a bolt replaces the
   percentage (it would read too high), the low-battery warning is off and an "empty" player wakes up. A battery that is already full
   shows no trend and is not detected as charging.
   **Calibration:** divider tolerance and the ADS1115 input load can make the voltage read about 1 % off. Measure the battery with a
