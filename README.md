@@ -223,6 +223,13 @@ ota_1 0x620000 (6 MB); about 3.9 MB stay free. Changing this layout later needs 
 The SD and I2S pins are the GPIOs left free by the RGB panel, taken from the Elecrow 5" ESP32-S3 wiki. The touch range is read
 from the GT911 at startup.
 
+**Start-up noise:** the MAX98357A amplifier turns floating inputs into noise while the chip boots. Three things keep it quiet (together
+they solved it on the author's board): the I2S clocks start as the first thing in `app_main()`; a small bootloader hook
+(`bootloader_components/my_boot_hooks`) drives GPIO17 (DIN) and GPIO18 (LRC) low from the first moment of the bootloader (needs the full
+image over USB, an OTA update does not replace the bootloader); and optionally a 10 kΩ pull-down from GPIO17 and from GPIO18 to GND.
+**Never put a pull-down on GPIO0 (BCLK):** it is a strapping pin and the chip would boot into download mode. The PSRAM test and the image hash
+check at power-up are switched off in `sdkconfig.defaults` to shorten the boot.
+
 ## Display notes (hard-won)
 
 The RGB framebuffer lives in PSRAM, which shares its bus with the panel DMA, WiFi and the code (it runs from PSRAM).
