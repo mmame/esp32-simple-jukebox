@@ -10,6 +10,7 @@ The player must be in upload mode: tap the WiFi button on the device, join the W
   musicplayer.py rename --album "Old name" --to "New name"
   musicplayer.py delete --album "Beatles - Abbey Road" [--file 03_x.mp3]
   musicplayer.py ota release/esp32-cyd-musicplayer-ota.bin
+  musicplayer.py screenshot [file.png]      (the player's screen as PNG, default screenshot.png)
   musicplayer.py done                       (leave upload mode: WiFi off, library reloads)
 
 Standard library only. Optional: Pillow (cover crop/convert), ffmpeg on PATH (converts non-MP3 audio to MP3).
@@ -234,6 +235,13 @@ def cmd_ota(api, a):
     print(json.dumps({"ok": True, "note": "the player reboots into the new firmware"}))
 
 
+def cmd_screenshot(api, a):
+    data = api.call("GET", "/screenshot.png")
+    with open(a.file, "wb") as f:
+        f.write(data)
+    print(json.dumps({"ok": True, "file": a.file, "bytes": len(data)}))
+
+
 def cmd_done(api, a):
     api.call("POST", "/api/done")
     print(json.dumps({"ok": True}))
@@ -270,6 +278,10 @@ def main():
     o = sub.add_parser("ota")
     o.add_argument("image")
     o.set_defaults(fn=cmd_ota)
+
+    s = sub.add_parser("screenshot")
+    s.add_argument("file", nargs="?", default="screenshot.png")
+    s.set_defaults(fn=cmd_screenshot)
 
     sub.add_parser("done").set_defaults(fn=cmd_done)
 

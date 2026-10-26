@@ -7,6 +7,13 @@ and only a few large buttons. Music is added from a phone or laptop through a bu
 
 ## Using the player
 
+![The player while shuffle plays](docs/screenshot.png)
+
+*The screen while a track plays in shuffle mode (taken with `GET /screenshot.png`, see below). Battery 96 %, the song title on the
+cover, the badge shows track 3 of 12; the volume pot is connected, so there are no - / + buttons.*
+
+The layout:
+
 ```
 +--------------------------------------------------------------+
 | [battery 78%]                                      [ WiFi ]  |
@@ -65,7 +72,10 @@ The page is embedded in the firmware (`main/web/index.html`, no internet needed)
   (tuned for a Faital 3FE22 in a sealed enclosure of about 1.5 l: its cone only moves below that, and Xmax is 1.8 mm); no fixed level reduction: a soft limiter catches
   the peaks (only the top volume steps reach it). Bass is a low shelf at 160 Hz, treble a high shelf at 6 kHz (`main/eq.c`, about 1 % CPU). API: `GET /api/eq`,
   `POST /api/eq?bass=..&treble=..`.
-* **Wi-Fi:** name and password of the access point (see "Using the player"); **System** tab: firmware update.
+* **Wi-Fi:** name and password of the access point (see "Using the player"); **System** tab: firmware update and screenshot.
+* **Screenshot:** `GET /screenshot.png` (button on the System tab, or `python tools/musicplayer.py screenshot out.png`) returns the
+  screen as a PNG, without the Wi-Fi box that covers it. LVGL renders the screen into a 768 KB buffer in PSRAM, the rows are compressed with
+  the deflate code in the ESP32-S3 ROM (miniz) and streamed; the file is typically a few tens of KB. The screen freezes for a moment.
 * **Display:** timeout until the backlight dims (seconds, 0 = never, default 90) and the dimmed brightness (130..255, default 190);
   stored in flash (NVS) and kept over restarts. API: `GET /api/settings`, `POST /api/settings?dim_s=..&dim_level=..`.
 * **Battery:** with the optional ADC the page shows percent, smoothed and instantaneous voltage and the voltage at the ADC input

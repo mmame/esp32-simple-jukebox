@@ -41,6 +41,7 @@ CONFIG_FATFS_CODEPAGE_850=y
 
 # LVGL: QR code for the WiFi credentials
 CONFIG_LV_USE_QRCODE=y
+CONFIG_LV_USE_SNAPSHOT=y
 
 # HTTP server: album/file names travel in the query string
 CONFIG_HTTPD_MAX_URI_LEN=1024

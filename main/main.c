@@ -17,6 +17,9 @@ static const char *TAG = "musicplayer";
 
 void app_main(void)
 {
+    /* first of all: the I2S clocks run (silence) as early as the code can, so the amplifier does not play noise
+     * while the rest of the system starts up */
+    ESP_ERROR_CHECK(player_init(ui_player_event));
     ESP_LOGI(TAG, "app_main: free heap %u", (unsigned)esp_get_free_heap_size());
     settings_init();
     board_backlight_init();
@@ -32,7 +35,6 @@ void app_main(void)
 
     size_t n_albums = 0;
     const library_album_t *albums = NULL;
-    ESP_ERROR_CHECK(player_init(ui_player_event));     /* starts I2S right away (silence) */
     bool sd_ok = false;
     for (int attempt = 1; attempt <= 5 && !sd_ok; attempt++)
     {

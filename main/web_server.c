@@ -22,6 +22,7 @@
 #include "settings.h"
 #include "volume_pot.h"
 #include "web_server.h"
+#include "screenshot.h"
 
 static const char *TAG = "web_server";
 
@@ -651,7 +652,7 @@ esp_err_t web_server_start(void (*on_done)(void))
     httpd_config_t cfg = HTTPD_DEFAULT_CONFIG();
     cfg.stack_size = 8192;
     cfg.core_id = 1;        // core 0 is busy with the display refill interrupt
-    cfg.max_uri_handlers = 20;
+    cfg.max_uri_handlers = 24;
     cfg.max_open_sockets = 5;
     cfg.recv_wait_timeout = 20;
     cfg.send_wait_timeout = 20;
@@ -672,6 +673,7 @@ esp_err_t web_server_start(void (*on_done)(void))
         { .uri = "/api/ota",       .method = HTTP_POST,   .handler = api_ota },
         { .uri = "/api/battery",   .method = HTTP_GET,    .handler = api_battery },
         { .uri = "/api/battery",   .method = HTTP_POST,   .handler = api_battery_calibrate },
+        { .uri = "/screenshot.png", .method = HTTP_GET,   .handler = screenshot_send_png },
         { .uri = "/api/eq",        .method = HTTP_GET,    .handler = api_eq_get },
         { .uri = "/api/eq",        .method = HTTP_POST,   .handler = api_eq_set },
         { .uri = "/api/wifi",      .method = HTTP_GET,   .handler = api_wifi_get },
