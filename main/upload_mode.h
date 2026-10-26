@@ -10,7 +10,7 @@
 
 typedef struct {
     char ssid[33];
-    char password[16];
+    char password[64];
     char url[32];
 } upload_info_t;
 

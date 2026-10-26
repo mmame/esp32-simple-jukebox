@@ -43,6 +43,10 @@
   #status { margin-top:12px; min-height:1.4em; }
   #status.err { color:var(--bad); }
   #status.ok { color:var(--ok); }
+  nav { display:flex; gap:4px; margin-top:16px; border-bottom:1px solid var(--line); position:sticky; top:0; background:var(--bg); z-index:2; }
+  nav button { border:0; border-bottom:3px solid transparent; border-radius:0; background:none; padding:10px 16px; color:var(--mute); }
+  nav button[aria-selected=true] { color:var(--ink); border-bottom-color:var(--accent); font-weight:600; }
+  .tab[hidden] { display:none; }
 </style>
 </head>
 <body>
@@ -51,6 +55,14 @@
     <h1>Music Player</h1>
     <button id="done" class="primary">Done</button>
   </header>
+
+  <nav role="tablist">
+    <button role="tab" data-tab="music" aria-selected="true">Music</button>
+    <button role="tab" data-tab="settings" aria-selected="false">Settings</button>
+    <button role="tab" data-tab="system" aria-selected="false">System</button>
+  </nav>
+
+  <div class="tab" id="tab-music">
 
   <section>
     <h2>Music on the SD card</h2>
@@ -81,6 +93,9 @@
     <div id="status"></div>
   </section>
 
+  </div>
+
+  <div class="tab" id="tab-settings" hidden>
   <section>
     <h2>Display</h2>
     <label for="dim-s">Dim the screen after (seconds without touch, 0 = never dim)</label>
@@ -92,20 +107,52 @@
   </section>
 
   <section>
-    <h2>Firmware update</h2>
-    <div class="hint" id="version"></div>
+    <h2>Sound</h2>
+    <label for="eq-bass">Bass: <span id="eq-bass-val"></span></label>
+    <input id="eq-bass" type="range" min="0" max="6" step="1" style="width:100%">
+    <label for="eq-treble">Treble: <span id="eq-treble-val"></span></label>
+    <input id="eq-treble" type="range" min="0" max="6" step="1" style="width:100%">
+    <div class="hint">Boost in dB, 0 = neutral. Changes are heard at once while music plays. Tuned for the 3FE22 speaker in a sealed enclosure of about 1.5 litres: very low notes are cut below 80 Hz to protect the speaker.</div>
+    <div id="eq-status" class="hint"></div>
+  </section>
+
+  <section>
+    <h2>Wi-Fi</h2>
+    <label for="wifi-ssid">Network name (1 to 32 characters)</label>
+    <input id="wifi-ssid" type="text" maxlength="32" autocomplete="off" style="width:100%">
+    <label for="wifi-pass">Password (8 to 63 characters)</label>
+    <input id="wifi-pass" type="text" maxlength="63" autocomplete="off" style="width:100%">
+    <div class="hint">The new name and password are used the next time the Wi-Fi is switched on at the player; this connection keeps working until then. If you forget them, erase the settings (see the README) to get <code>MyMusicPlayer</code> / <code>music1234</code> back.</div>
+    <p><button id="wifi-save">Save</button> <span id="wifi-status" class="hint"></span></p>
+  </section>
+
+
+  <section id="battery-sec" hidden>
+    <h2>Battery</h2>
     <div class="hint" id="battery"></div>
-    <div class="hint" id="calibrate" hidden>
+    <div class="hint" id="calibrate">
       Calibrate the battery voltage: measure the battery with a multimeter and enter it here
       <input id="cal-volts" type="number" min="2.5" max="4.5" step="0.001" placeholder="3.912" style="width:6em"> V
       <button id="cal-go">Set</button> <button id="cal-reset">Reset</button> <span id="cal-status"></span>
     </div>
+  </section>
+
+  </div>
+
+  <div class="tab" id="tab-system" hidden>
+  <section>
+    <h2>Firmware update</h2>
+    <div class="hint" id="version"></div>
     <p><input id="fw" type="file" accept=".bin"></p>
     <button id="fw-go">Install update</button>
     <div class="hint">Use the file ending in <code>-ota.bin</code>. The player restarts afterwards.</div>
     <div class="bar"><i id="fw-progress"></i></div>
     <div id="fw-status" class="hint"></div>
   </section>
+
+  <p class="hint">Open source (MIT): <a href="https://github.com/mmame/esp32-simple-jukebox" target="_blank" rel="noopener">github.com/mmame/esp32-simple-jukebox</a>
+    - source, documentation and firmware downloads. (Needs a connection to the internet, which this Wi-Fi does not provide.)</p>
+  </div>
 </main>
 
 <script>
@@ -439,6 +486,52 @@ $("dim-save").onclick = async () => {
 };
 loadSettings();
 
+// tone control: applied (and stored) when a slider is released
+function showEq() {
+  $("eq-bass-val").textContent = "+" + $("eq-bass").value + " dB";
+  $("eq-treble-val").textContent = "+" + $("eq-treble").value + " dB";
+}
+async function loadEq() {
+  try {
+    const e = await (await fetch("/api/eq")).json();
+    $("eq-bass").max = $("eq-treble").max = e.max;
+    $("eq-bass").value = e.bass;
+    $("eq-treble").value = e.treble;
+    showEq();
+  } catch (e) { $("eq-status").textContent = "Cannot read the sound settings."; }
+}
+async function saveEq() {
+  try {
+    const r = await fetch(`/api/eq?bass=${$("eq-bass").value}&treble=${$("eq-treble").value}`, { method: "POST" });
+    if (!r.ok) throw new Error(await r.text());
+    $("eq-status").textContent = "Saved.";
+  } catch (e) { $("eq-status").textContent = "Failed: " + e.message; }
+}
+for (const id of ["eq-bass", "eq-treble"]) {
+  $(id).oninput = showEq;
+  $(id).onchange = saveEq;
+}
+loadEq();
+
+// access point name and password
+async function loadWifi() {
+  try {
+    const w = await (await fetch("/api/wifi")).json();
+    $("wifi-ssid").value = w.ssid;
+    $("wifi-pass").value = w.password;
+  } catch (e) { $("wifi-status").textContent = "Cannot read the Wi-Fi settings."; }
+}
+$("wifi-save").onclick = async () => {
+  const ssid = $("wifi-ssid").value, pass = $("wifi-pass").value;
+  if (!ssid || pass.length < 8) { $("wifi-status").textContent = "Name required, password at least 8 characters."; return; }
+  try {
+    const r = await fetch(`/api/wifi?ssid=${encodeURIComponent(ssid)}&password=${encodeURIComponent(pass)}`, { method: "POST" });
+    if (!r.ok) throw new Error(await r.text());
+    $("wifi-status").textContent = "Saved. Used the next time the Wi-Fi is switched on.";
+  } catch (e) { $("wifi-status").textContent = "Failed: " + e.message; }
+};
+loadWifi();
+
 // battery (only with the ADS1115): percent, smoothed and instantaneous voltage, voltage at the ADC input
 async function pollBattery() {
   try {
@@ -446,7 +539,7 @@ async function pollBattery() {
     $("battery").textContent = b.present
       ? `Battery: ${b.charging ? "charging (" + b.percent + " % is too high while charging)" : b.percent + " %"}, ${b.volts.toFixed(3)} V (smoothed), ${b.instant.toFixed(3)} V now, ADC input ${b.adc.toFixed(3)} V` + (b.external ? " (external supply)" : "")
       : "";
-    $("calibrate").hidden = !b.present;
+    $("battery-sec").hidden = !b.present;
     if (b.present) $("cal-status").textContent = `(correction x${b.cal.toFixed(4)})`;
   } catch (e) { /* the player may be busy or gone */ }
 }
@@ -461,6 +554,15 @@ $("cal-go").onclick = () => { if ($("cal-volts").value) calibrate($("cal-volts")
 $("cal-reset").onclick = () => calibrate(0);
 setInterval(pollBattery, 3000);
 pollBattery();
+
+// tabs: Music / Settings / System, the choice survives a reload (#settings)
+function showTab(name) {
+  for (const b of document.querySelectorAll("nav button")) b.setAttribute("aria-selected", b.dataset.tab === name);
+  for (const t of document.querySelectorAll(".tab")) t.hidden = t.id !== "tab-" + name;
+  history.replaceState(null, "", "#" + name);
+}
+for (const b of document.querySelectorAll("nav button")) b.onclick = () => showTab(b.dataset.tab);
+showTab(["music", "settings", "system"].includes(location.hash.slice(1)) ? location.hash.slice(1) : "music");
 
 window.addEventListener("beforeunload", e => { if (busy) { e.preventDefault(); e.returnValue = ""; } });
 refresh().catch(e => setStatus("Cannot reach the player: " + e.message, "err"));

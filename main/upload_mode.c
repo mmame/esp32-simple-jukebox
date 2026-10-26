@@ -4,6 +4,7 @@
 
 #include "player.h"
 #include "sd_card.h"
+#include "settings.h"
 #include "upload_mode.h"
 #include "web_server.h"
 #include "wifi_ap.h"
@@ -27,8 +28,8 @@ esp_err_t upload_mode_start(upload_info_t *info, void (*on_done)(void))
         wifi_ap_stop();
         return ret;
     }
-    strlcpy(info->ssid, WIFI_AP_SSID, sizeof(info->ssid));
-    strlcpy(info->password, WIFI_AP_PASSWORD, sizeof(info->password));
+    strlcpy(info->ssid, settings_wifi_ssid(), sizeof(info->ssid));
+    strlcpy(info->password, settings_wifi_password(), sizeof(info->password));
     strlcpy(info->url, WIFI_AP_URL, sizeof(info->url));
     ESP_LOGI(TAG, "upload mode on: %s / %s", info->ssid, info->url);
     return ESP_OK;

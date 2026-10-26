@@ -8,6 +8,7 @@
 #include "esp_wifi.h"
 #include "nvs_flash.h"
 
+#include "settings.h"
 #include "wifi_ap.h"
 
 static const char *TAG = "wifi_ap";
@@ -58,9 +59,9 @@ esp_err_t wifi_ap_start(void)
     esp_wifi_set_storage(WIFI_STORAGE_RAM);
 
     wifi_config_t cfg = { 0 };
-    strlcpy((char *)cfg.ap.ssid, WIFI_AP_SSID, sizeof(cfg.ap.ssid));
-    strlcpy((char *)cfg.ap.password, WIFI_AP_PASSWORD, sizeof(cfg.ap.password));
-    cfg.ap.ssid_len = strlen(WIFI_AP_SSID);
+    strlcpy((char *)cfg.ap.ssid, settings_wifi_ssid(), sizeof(cfg.ap.ssid));
+    strlcpy((char *)cfg.ap.password, settings_wifi_password(), sizeof(cfg.ap.password));
+    cfg.ap.ssid_len = strlen(settings_wifi_ssid());
     cfg.ap.channel = 6;
     cfg.ap.max_connection = 4;
     cfg.ap.authmode = WIFI_AUTH_WPA2_PSK;
@@ -73,7 +74,7 @@ esp_err_t wifi_ap_start(void)
     esp_wifi_set_bandwidth(WIFI_IF_AP, WIFI_BW_HT20);
     esp_event_handler_register(WIFI_EVENT, ESP_EVENT_ANY_ID, on_wifi_event, NULL);
     s_running = true;
-    ESP_LOGI(TAG, "AP \"%s\" up, free heap %u", WIFI_AP_SSID, (unsigned)esp_get_free_heap_size());
+    ESP_LOGI(TAG, "AP \"%s\" up, free heap %u", settings_wifi_ssid(), (unsigned)esp_get_free_heap_size());
     return ESP_OK;
 }
 

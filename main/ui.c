@@ -62,6 +62,7 @@ static lv_obj_t *s_battery;        /* battery icon + percent, top left; only wit
 static lv_obj_t *s_arrows[2];       /* previous / next album; hidden in shuffle mode (the screen follows the music) */
 static bool s_shuffle_on;
 static lv_obj_t *s_upload_box;      /* modal message box while upload mode is on */
+static bool s_upload_active;        /* upload mode is on (from the WiFi button until the library is rebuilt) */
 static int s_current = -1;      /* album that was last started (LVGL task only) */
 
 /* Written by the player task, read by poll(). */
@@ -102,6 +103,7 @@ static void upload_box_create(const upload_info_t *info, esp_err_t err)
 {
     lv_obj_t *box = lv_msgbox_create(NULL);     /* no parent: modal, dims the screen behind it */
     s_upload_box = box;
+    s_upload_active = true;
     lv_obj_set_size(box, 740, 400);
     lv_obj_set_style_text_font(box, &lv_font_montserrat_28, 0);
     lv_msgbox_add_title(box, "Add music with the web page");
@@ -113,8 +115,23 @@ static void upload_box_create(const upload_info_t *info, esp_err_t err)
 
     if (err == ESP_OK)
     {
-        char wifi[96];
-        snprintf(wifi, sizeof(wifi), "WIFI:T:WPA;S:%s;P:%s;;", info->ssid, info->password);
+        /* QR payload: the characters \ ; , : " must be escaped with a backslash */
+        char ssid_q[2 * SETTINGS_WIFI_SSID_MAX + 1], pass_q[2 * SETTINGS_WIFI_PASS_MAX + 1];
+        const char *src[2] = { info->ssid, info->password };
+        char *dst[2] = { ssid_q, pass_q };
+        for (int i = 0; i < 2; i++)
+        {
+            char *o = dst[i];
+            for (const char *p = src[i]; *p; p++)
+            {
+                if (strchr("\\;,:\"", *p))
+                    *o++ = '\\';
+                *o++ = *p;
+            }
+            *o = 0;
+        }
+        char wifi[2 * (SETTINGS_WIFI_SSID_MAX + SETTINGS_WIFI_PASS_MAX) + 24];
+        snprintf(wifi, sizeof(wifi), "WIFI:T:WPA;S:%s;P:%s;;", ssid_q, pass_q);
         lv_obj_t *qr_bg = lv_obj_create(content);
         lv_obj_set_size(qr_bg, 220, 220);
         lv_obj_set_style_bg_color(qr_bg, lv_color_white(), 0);
@@ -149,11 +166,20 @@ static void upload_box_create(const upload_info_t *info, esp_err_t err)
     lv_obj_center(box);
 }
 
+/* Takes the message box off the screen at once; the rest of leaving follows from poll(). */
+static void upload_box_hide(void)
+{
+    if (!s_upload_box)
+        return;
+    lv_msgbox_close_async(s_upload_box);
+    s_upload_box = NULL;
+}
+
 static void build_library(void);
 
 static void upload_enter(void)
 {
-    if (s_upload_box)
+    if (s_upload_active)
         return;
     upload_info_t info;
     s_upload_done = false;
@@ -166,8 +192,7 @@ static void upload_enter(void)
 
 static void upload_leave(void)
 {
-    lv_msgbox_close_async(s_upload_box);
-    s_upload_box = NULL;
+    upload_box_hide();
     upload_mode_stop();
     board_lcd_set_low_bandwidth(false);
 
@@ -180,6 +205,7 @@ static void upload_leave(void)
     s_albums = library_albums(&n);
     s_n_albums = n;
     build_library();
+    s_upload_active = false;
 }
 
 /* ---------- album page ---------- */
@@ -271,6 +297,8 @@ static void browse(int idx)
 
 static void on_button(lv_event_t *e)
 {
+    if (s_upload_active && !s_upload_box)
+        return;     /* WiFi is being switched off behind the scenes: nothing else to do until the library is back */
     switch ((action_t)(intptr_t)lv_event_get_user_data(e))
     {
     case ACT_PREV:          if (!start_shown_if_stopped()) player_prev();          break;
@@ -280,7 +308,7 @@ static void on_button(lv_event_t *e)
     case ACT_VOL_DOWN:      player_volume_down();   break;
     case ACT_VOL_UP:        player_volume_up();     break;
     case ACT_WIFI:          upload_enter();         break;
-    case ACT_UPLOAD_DONE:   upload_leave();         break;
+    case ACT_UPLOAD_DONE:   s_upload_done = true; upload_box_hide(); break;     /* gone at once; poll() does the rest */
     case ACT_SHUFFLE:
         s_shuffle_on = !s_shuffle_on;
         player_set_shuffle(s_shuffle_on);
@@ -624,10 +652,12 @@ static void poll(lv_timer_t *t)
     static uint32_t done_at, advanced_at;
 
     /* upload page finished: leave upload mode shortly after the reply went out */
-    if (s_upload_box)
+    if (s_upload_active)
     {
         if (s_upload_done && !done_at)
-            done_at = lv_tick_get();
+            done_at = lv_tick_get() | 1;
+        if (done_at)
+            upload_box_hide();        /* the box goes at once, also when Done was pressed on the web page */
         if (done_at && lv_tick_elaps(done_at) > DONE_DELAY_MS)
         {
             done_at = 0;

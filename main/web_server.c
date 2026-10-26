@@ -557,6 +557,71 @@ static esp_err_t api_settings_get(httpd_req_t *req)
     return httpd_resp_sendstr(req, json);
 }
 
+/* Appends s as a JSON string (quotes, backslashes and control characters escaped). */
+static void json_string(char *out, size_t size, const char *s)
+{
+    size_t n = strlen(out);
+    if (n + 1 < size)
+        out[n++] = '"';
+    for (; *s && n + 7 < size; s++)
+    {
+        if (*s == '"' || *s == '\\')
+            out[n++] = '\\';
+        if ((unsigned char)*s < 0x20)
+            n += snprintf(out + n, size - n, "\\u%04x", *s);
+        else
+            out[n++] = *s;
+    }
+    if (n + 2 < size)
+        out[n++] = '"';
+    out[n] = 0;
+}
+
+/* GET /api/eq -> {"bass":3,"treble":2,"max":6} (dB) */
+static esp_err_t api_eq_get(httpd_req_t *req)
+{
+    char json[80];
+    snprintf(json, sizeof(json), "{\"bass\":%d,\"treble\":%d,\"max\":%d}", settings_eq_bass(), settings_eq_treble(),
+             SETTINGS_EQ_MAX);
+    httpd_resp_set_type(req, "application/json");
+    return httpd_resp_sendstr(req, json);
+}
+
+/* POST /api/eq?bass=3&treble=2 (dB, clamped to 0..6); audible at once */
+static esp_err_t api_eq_set(httpd_req_t *req)
+{
+    char a[8], b[8];
+    if (!get_param(req, "bass", a, sizeof(a)) || !get_param(req, "treble", b, sizeof(b)))
+        return bad_request(req, "bass and treble are required");
+    if (settings_set_eq(atoi(a), atoi(b)) != ESP_OK)
+        return httpd_resp_send_500(req);
+    return api_eq_get(req);
+}
+
+/* GET /api/wifi ->{"ssid":"...","password":"..."}: the credentials the access point uses (the page needs them to edit) */
+static esp_err_t api_wifi_get(httpd_req_t *req)
+{
+    char json[320] = "{\"ssid\":";
+    json_string(json, sizeof(json), settings_wifi_ssid());
+    strlcat(json, ",\"password\":", sizeof(json));
+    json_string(json, sizeof(json), settings_wifi_password());
+    strlcat(json, "}", sizeof(json));
+    httpd_resp_set_type(req, "application/json");
+    return httpd_resp_sendstr(req, json);
+}
+
+/* POST /api/wifi?ssid=...&password=...  Stored at once, used when the WiFi is switched on the next time (this connection
+ * keeps working with the old one). */
+static esp_err_t api_wifi_set(httpd_req_t *req)
+{
+    char ssid[SETTINGS_WIFI_SSID_MAX + 1], pass[SETTINGS_WIFI_PASS_MAX + 1];
+    if (!get_param(req, "ssid", ssid, sizeof(ssid)) || !get_param(req, "password", pass, sizeof(pass)))
+        return bad_request(req, "ssid and password are required (name up to 32, password 8 to 63 characters)");
+    if (settings_set_wifi(ssid, pass) != ESP_OK)
+        return bad_request(req, "name must be 1 to 32 characters, password 8 to 63 characters");
+    return api_wifi_get(req);
+}
+
 /* POST /api/settings?dim_s=90&dim_level=190 (values are clamped to their ranges) */
 static esp_err_t api_settings_set(httpd_req_t *req)
 {
@@ -586,7 +651,7 @@ esp_err_t web_server_start(void (*on_done)(void))
     httpd_config_t cfg = HTTPD_DEFAULT_CONFIG();
     cfg.stack_size = 8192;
     cfg.core_id = 1;        // core 0 is busy with the display refill interrupt
-    cfg.max_uri_handlers = 16;
+    cfg.max_uri_handlers = 20;
     cfg.max_open_sockets = 5;
     cfg.recv_wait_timeout = 20;
     cfg.send_wait_timeout = 20;
@@ -607,7 +672,11 @@ esp_err_t web_server_start(void (*on_done)(void))
         { .uri = "/api/ota",       .method = HTTP_POST,   .handler = api_ota },
         { .uri = "/api/battery",   .method = HTTP_GET,    .handler = api_battery },
         { .uri = "/api/battery",   .method = HTTP_POST,   .handler = api_battery_calibrate },
-        { .uri = "/api/settings",  .method = HTTP_GET,   .handler = api_settings_get },
+        { .uri = "/api/eq",        .method = HTTP_GET,    .handler = api_eq_get },
+        { .uri = "/api/eq",        .method = HTTP_POST,   .handler = api_eq_set },
+        { .uri = "/api/wifi",      .method = HTTP_GET,   .handler = api_wifi_get },
+        { .uri = "/api/wifi",      .method = HTTP_POST,   .handler = api_wifi_set },
+        { .uri = "/api/settings",  .method = HTTP_GET,  .handler = api_settings_get },
         { .uri = "/api/settings",  .method = HTTP_POST,   .handler = api_settings_set },
         { .uri = "/api/done",      .method = HTTP_POST,   .handler = api_done },
     };

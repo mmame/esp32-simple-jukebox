@@ -47,7 +47,11 @@ the network name, the password and a QR code for joining.
 | Password | `music1234` |
 | Web page | `http://192.168.4.1` |
 
-(constants in `main/wifi_ap.h`). Open the page, then tap **Done** in the box on the player, or **Done** on the web page,
+These are the defaults (`main/wifi_ap.h`); the web page has a **Wi-Fi** section where you can change the name and the password (stored
+in flash, used the next time the WiFi is switched on). If you forget them, erase the settings partition over USB to get the defaults back
+(this also resets the dimming and battery calibration): `esptool.py --chip esp32s3 -p COMx erase_region 0x9000 0x6000`.
+
+Open the page, then tap **Done** in the box on the player, or **Done** on the web page,
 to switch WiFi off again. The library is rescanned and the covers reload.
 
 The page is embedded in the firmware (`main/web/index.html`, no internet needed) and does all conversion in the browser:
@@ -57,6 +61,11 @@ The page is embedded in the firmware (`main/web/index.html`, no internet needed)
   decoded by the browser and encoded to 160 kbps MP3 with the bundled lamejs (`main/web/lame.min.js`, LGPL-3.0).
 * Songs are stored as `NN_name.mp3` so the play order matches the order in the page. Use an existing album name to append songs.
 * Per album: **Rename**, **Change cover**, **Add songs**, **Delete album**; single songs can be deleted too.
+* **Sound:** bass and treble boost, 0 to +6 dB each (defaults +3 / +2), heard at once. A fixed high-pass at 80 Hz protects the small speaker
+  (tuned for a Faital 3FE22 in a sealed enclosure of about 1.5 l: its cone only moves below that, and Xmax is 1.8 mm); no fixed level reduction: a soft limiter catches
+  the peaks (only the top volume steps reach it). Bass is a low shelf at 160 Hz, treble a high shelf at 6 kHz (`main/eq.c`, about 1 % CPU). API: `GET /api/eq`,
+  `POST /api/eq?bass=..&treble=..`.
+* **Wi-Fi:** name and password of the access point (see "Using the player"); **System** tab: firmware update.
 * **Display:** timeout until the backlight dims (seconds, 0 = never, default 90) and the dimmed brightness (130..255, default 190);
   stored in flash (NVS) and kept over restarts. API: `GET /api/settings`, `POST /api/settings?dim_s=..&dim_level=..`.
 * **Battery:** with the optional ADC the page shows percent, smoothed and instantaneous voltage and the voltage at the ADC input
@@ -229,6 +238,7 @@ flash and PSRAM at 120 MHz (does not boot on this unit, its flash is reported as
 * `player.c` decode task (priority 5, core 1): play/pause, stop, next, prev, volume; calls are non-blocking
 * `ui.c` one-album screen, arrows, control bar; the player task never takes the LVGL lock, the UI polls a state snapshot every 100 ms
 * `wifi_ap.c`, `web_server.c`, `upload_mode.c`, `web/` upload mode (access point, REST API, web page)
+* `eq.c` tone control (high-pass, bass and treble shelves)
 * `volume_pot.c` ADS1115 reader task (pot on AIN0, battery on AIN1, discharge curve, charge detection); `settings.c` dimming and battery calibration in NVS
 
 ## Status

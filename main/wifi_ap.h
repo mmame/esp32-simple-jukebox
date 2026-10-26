@@ -2,7 +2,7 @@
 
 #include "esp_err.h"
 
-/* Fixed access point credentials (shown on the player when the WiFi button is pressed). Change here if needed. */
+/* Default access point credentials; the user can change them on the web page (settings.h). Shown on the player when the WiFi button is pressed. */
 #define WIFI_AP_SSID        "MyMusicPlayer"
 #define WIFI_AP_PASSWORD    "music1234"     /* WPA2: 8..63 characters */
 #define WIFI_AP_URL         "http://192.168.4.1"

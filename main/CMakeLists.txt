@@ -1,5 +1,5 @@
 idf_component_register(SRCS "main.c" "sunton_esp32_8048s050c.c" "sd_card.c" "library.c" "player.c" "ui.c"
-                           "wifi_ap.c" "web_server.c" "upload_mode.c" "volume_pot.c" "settings.c"
+                           "wifi_ap.c" "web_server.c" "upload_mode.c" "volume_pot.c" "settings.c" "eq.c"
                     INCLUDE_DIRS "."
                     EMBED_FILES "web/index.html" "web/lame.min.js"
                     LDFRAGMENTS "linker.lf"

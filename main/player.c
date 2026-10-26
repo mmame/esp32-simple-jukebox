@@ -12,6 +12,7 @@
 #include "esp_random.h"
 #include "mp3dec.h"
 
+#include "eq.h"
 #include "player.h"
 #include "sunton_esp32_8048s050c.h"
 
@@ -326,8 +327,8 @@ static void write_pcm(const MP3FrameInfo *info)
             s_pcm[2 * i] = s_pcm[2 * i + 1] = (short)(((int32_t)s_pcm[2 * i] + s_pcm[2 * i + 1]) >> 1);
     }
 #endif
-    for (int i = 0; i < frames * 2; i++)
-        s_pcm[i] = (short)(((int32_t)s_pcm[i] * gain) >> 15);
+    /* tone control, volume and limiter; both channels carry the same signal when mono (expanded or downmixed) */
+    eq_process(s_pcm, frames, s_rate, info->nChans == 1 || PLAYER_DOWNMIX_TO_MONO, gain);
 
     size_t written;
     i2s_channel_write(s_tx, s_pcm, frames * 2 * sizeof(short), &written, portMAX_DELAY);
